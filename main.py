@@ -11,7 +11,7 @@ from astrbot.api import AstrBotConfig
 
 
 @register(
-    "astrbot_plugin_interstitial_context", "AnteriorTAg127", "轻量上下文注入插件", "1.1.0"
+    "astrbot_plugin_interstitial_context", "AnteriorTAg127", "轻量上下文注入插件", "1.2.0"
 )
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -98,11 +98,20 @@ class InterstitialContextPlugin(Star):
         start_h, start_m = divmod(start_minutes, 60)
         end_h, end_m = divmod(end_minutes, 60)
 
+        # 时段描述
+        period_map = [(0, "凌晨"), (6, "上午"), (12, "中午"), (14, "下午"), (18, "晚上")]
+        time_period = "深夜"
+        for threshold, label in period_map:
+            if now.hour >= threshold:
+                time_period = label
+
         template = self.config.get(
-            "time_format_template", "{start_h}:{start_m}-{end_h}:{end_m}"
+            "time_format_template", "{time_period}{start_h}:{start_m}-{end_h}:{end_m}"
         )
         formatted = template.format(
-            start_h=start_h, start_m=f"{start_m:02d}", end_h=end_h, end_m=f"{end_m:02d}"
+            time_period=time_period,
+            start_h=f"{start_h:02d}", start_m=f"{start_m:02d}",
+            end_h=f"{end_h:02d}", end_m=f"{end_m:02d}",
         )
 
         return (f"{segment_index}", formatted)
@@ -115,6 +124,8 @@ class InterstitialContextPlugin(Star):
         cache_key = self._get_cache_key(event)
         user_id = event.get_sender_id()
         nickname = event.get_sender_name()
+        group_id = event.get_group_id()
+        no_save = self.config.get("inject_no_save", True)
 
         # 1. 计算好感度衰减
         affection = await self._calculate_decay(event)
@@ -131,15 +142,30 @@ class InterstitialContextPlugin(Star):
                 logger.info(f"[InterstitialContext] {cache_key} 好感度 {affection} 低于激活阈值 {activation_threshold}，回复概率判定不回复")
                 event.stop_event()
                 return
-            # 注入冷淡提示
+            # 注入冷淡提示（动态，注入用户消息）
             cold_hint = self.config.get("cold_hint_template", "")
             if cold_hint:
-                req.extra_user_content_parts.append(
-                    TextPart(text=cold_hint).mark_as_temp()
-                )
+                part = TextPart(text=cold_hint)
+                if no_save:
+                    part.mark_as_temp()
+                req.extra_user_content_parts.append(part)
                 logger.debug(f"[InterstitialContext] 注入冷淡提示: {cold_hint}")
 
-        # 4. 变更判定
+        # 4. 静态信息注入 system_prompt
+        if group_id:
+            static_info = f"[当前对话:群聊{group_id}]"
+        else:
+            static_info = f"[当前对话:私聊 用户{nickname}({user_id})]"
+        hint = self.config.get("affection_change_hint", "")
+        if hint:
+            max_change = self.config.get("max_affection_change", 5)
+            static_info += "\n" + hint.format(max_change=max_change)
+        if self.config.get("inject_system_prompt_position", "before") == "before":
+            req.system_prompt = static_info + "\n" + req.system_prompt
+        else:
+            req.system_prompt += "\n" + static_info
+
+        # 5. 动态信息注入用户消息（好感度、时间区间、变化提示）
         affection_range_key = self._get_affection_range_key(affection)
         time_segment_key, time_segment_text = self._get_time_segment()
 
@@ -150,9 +176,8 @@ class InterstitialContextPlugin(Star):
             or snapshot.get("user_id") != user_id
         )
 
-        # 4. 注入上下文（变更时）
-        if changed or not snapshot:
-            affection_display = self._render_affection_display(affection)
+        if changed or not snapshot or no_save:
+            affection_display = self._match_affection_rule(affection)
             inject_template = self.config.get(
                 "inject_template",
                 "<{nickname}好感{affection_display}> <{time_segment}>",
@@ -163,9 +188,10 @@ class InterstitialContextPlugin(Star):
                 affection_display=affection_display,
                 time_segment=time_segment_text,
             )
-            req.extra_user_content_parts.append(
-                TextPart(text=inject_text).mark_as_temp()
-            )
+            part = TextPart(text=inject_text)
+            if no_save:
+                part.mark_as_temp()
+            req.extra_user_content_parts.append(part)
             logger.info(f"[InterstitialContext] 注入上下文: {inject_text}")
 
             # 更新快照
@@ -176,13 +202,6 @@ class InterstitialContextPlugin(Star):
             }
         else:
             logger.debug(f"[InterstitialContext] {cache_key} 无变更，跳过注入")
-
-        # 5. 注入好感度变化提示
-        hint = self.config.get("affection_change_hint", "")
-        if hint:
-            max_change = self.config.get("max_affection_change", 5)
-            hint = hint.format(max_change=max_change)
-            req.extra_user_content_parts.append(TextPart(text=hint).mark_as_temp())
 
     # ==================== 好感度变化解析（on_llm_response 钩子） ====================
 

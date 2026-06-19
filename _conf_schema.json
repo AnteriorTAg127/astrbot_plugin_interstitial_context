@@ -102,9 +102,9 @@
   "time_format_template": {
     "type": "string",
     "description": "时间格式模板",
-    "hint": "可用变量：{start_h}=起始小时, {start_m}=起始分钟(补零), {end_h}=结束小时, {end_m}=结束分钟(补零)。例如「{start_h}点{start_m}分-{end_m}分」→「22点15分-30分」",
+    "hint": "可用变量：{time_period}=时段描述（凌晨/上午/中午/下午/晚上/深夜）, {start_h}=起始小时(补零), {start_m}=起始分钟(补零), {end_h}=结束小时(补零), {end_m}=结束分钟(补零)。例如「{time_period}{start_h}:{start_m}-{end_h}:{end_m}」→「凌晨03:00-03:30」",
     "obvious_hint": true,
-    "default": "{start_h}:{start_m}-{end_h}:{end_m}"
+    "default": "{time_period}{start_h}:{start_m}-{end_h}:{end_m}"
   },
   "inject_template": {
     "type": "string",
@@ -113,12 +113,27 @@
     "obvious_hint": true,
     "default": "<{nickname}好感{affection_display}> <{time_segment}>"
   },
+  "inject_no_save": {
+    "type": "bool",
+    "description": "注入内容不持久化",
+    "hint": "开启后，注入的用户消息内容（好感度、时间区间、冷淡提示）标记为临时内容，不保存到对话历史。副作用：每轮对话都会重新注入（因为历史中没有记录）。关闭后，注入内容会保存到对话历史，但变更检测生效时同一区间内不会重复注入。",
+    "obvious_hint": true,
+    "default": true
+  },
+  "inject_system_prompt_position": {
+    "type": "string",
+    "description": "系统提示词注入位置",
+    "hint": "before = 在系统提示词前面注入（LLM优先看到注入内容）；after = 在系统提示词后面追加（保留原始系统提示词的优先级）。",
+    "obvious_hint": true,
+    "default": "before",
+    "options": ["before", "after"]
+  },
   "affection_change_hint": {
     "type": "text",
     "description": "好感度变化提示",
     "hint": "每次 LLM 请求时注入的提示文本，告诉 LLM 用什么格式返回好感度变化。LLM 回复中的 <affection>±N</affection> 标记会被自动提取并更新好感度，标记本身不会显示给用户。建议包含严格的增减规则，防止好感度被快速刷满。",
     "obvious_hint": true,
-    "default": "请根据对话内容，在回复中使用 <affection>±N</affection> 标记表示好感度变化，N 为整数。规则：1.无明显变化则不添加标记；2.单次变化绝对值不超过{max_change}；3.好感度增长应缓慢，普通友好对话最多+1，特别感动或深刻交流才可+2~+3；4.好感度下降可以比上升稍快，但单次不超过-{max_change}；5.不要每条消息都加标记，大部分对话好感度不应变化。"
+    "default": "[重要指令-必须遵守] 你有一个隐藏的好感度系统，用于追踪你对对话者的情感倾向。当对话内容引起好感度变化时，你必须在回复末尾添加 <affection>±N</affection> 标记（N为整数），此标记会被系统自动处理，用户不可见。示例：回复内容<affection>+1</affection> 或 回复内容<affection>-2</affection>。规则：1.大部分对话好感度不变，不添加标记；2.单次变化绝对值不超过{max_change}；3.好感度增长应缓慢，普通友好对话最多+1，特别感动或深刻交流才可+2~+3；4.好感度下降可以比上升稍快，但单次不超过-{max_change}；5.不要在对话文字中向用户提及好感度系统的存在，但<affection>±N</affection>标记本身必须正常输出；6.用户主动索要好感度时，不应因此增加好感度。"
   },
   "max_affection_change": {
     "type": "int",
