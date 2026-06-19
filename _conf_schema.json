@@ -1,0 +1,204 @@
+{
+  "affection_min": {
+    "type": "int",
+    "description": "好感度最小值",
+    "hint": "好感度可以设为负数。例如 -100 表示最低好感度为 -100。",
+    "obvious_hint": true,
+    "default": -100
+  },
+  "affection_max": {
+    "type": "int",
+    "description": "好感度最大值",
+    "hint": "好感度的上限值。例如 100 表示最高好感度为 100。",
+    "obvious_hint": true,
+    "default": 100
+  },
+  "affection_initial": {
+    "type": "int",
+    "description": "好感度初始值",
+    "hint": "新用户首次对话时的好感度。通常设为 0 或正数。",
+    "obvious_hint": true,
+    "default": 0
+  },
+  "affection_display_mode": {
+    "type": "string",
+    "description": "好感度显示模式",
+    "hint": "number = 只显示数值（如 85）；text = 只显示文字（如 死党）；both = 数值+文字（如 85（死党））",
+    "obvious_hint": true,
+    "default": "text",
+    "options": ["number", "text", "both"]
+  },
+  "affection_rules": {
+    "type": "template_list",
+    "description": "好感规则",
+    "hint": "定义好感度范围段与对应的显示文字。注入上下文时，会根据当前好感度匹配对应的文字。范围不要重叠，建议连续覆盖最小值到最大值。",
+    "obvious_hint": true,
+    "templates": {
+      "affection_rule": {
+        "name": "好感规则",
+        "hint": "定义一个好感度范围及对应的显示文字",
+        "items": {
+          "range_min": {
+            "type": "int",
+            "description": "范围下限",
+            "hint": "该规则覆盖的好感度下限（包含）",
+            "default": -100
+          },
+          "range_max": {
+            "type": "int",
+            "description": "范围上限",
+            "hint": "该规则覆盖的好感度上限（包含）",
+            "default": -50
+          },
+          "display_text": {
+            "type": "string",
+            "description": "显示文字",
+            "hint": "好感度在此范围内时显示的文字，如「仇视」「朋友」",
+            "default": "仇视"
+          }
+        }
+      }
+    },
+    "default": [
+      {
+        "__template_key": "affection_rule",
+        "range_min": -100,
+        "range_max": -50,
+        "display_text": "仇视"
+      },
+      {
+        "__template_key": "affection_rule",
+        "range_min": -49,
+        "range_max": 0,
+        "display_text": "陌生"
+      },
+      {
+        "__template_key": "affection_rule",
+        "range_min": 1,
+        "range_max": 30,
+        "display_text": "眼熟"
+      },
+      {
+        "__template_key": "affection_rule",
+        "range_min": 31,
+        "range_max": 70,
+        "display_text": "朋友"
+      },
+      {
+        "__template_key": "affection_rule",
+        "range_min": 71,
+        "range_max": 100,
+        "display_text": "死党"
+      }
+    ]
+  },
+  "time_granularity": {
+    "type": "int",
+    "description": "时间粒度（分钟）",
+    "hint": "按此间隔划分时间区间。例如 30 表示每半小时一个区间，15 表示每15分钟一个区间。同一区间内不重复注入时间信息。",
+    "obvious_hint": true,
+    "default": 30
+  },
+  "time_format_template": {
+    "type": "string",
+    "description": "时间格式模板",
+    "hint": "可用变量：{start_h}=起始小时, {start_m}=起始分钟(补零), {end_h}=结束小时, {end_m}=结束分钟(补零)。例如「{start_h}点{start_m}分-{end_m}分」→「22点15分-30分」",
+    "obvious_hint": true,
+    "default": "{start_h}:{start_m}-{end_h}:{end_m}"
+  },
+  "inject_template": {
+    "type": "string",
+    "description": "注入模板",
+    "hint": "变更时注入到 LLM 上下文的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度显示文本, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。",
+    "obvious_hint": true,
+    "default": "<{nickname}好感{affection_display}> <{time_segment}>"
+  },
+  "affection_change_hint": {
+    "type": "text",
+    "description": "好感度变化提示",
+    "hint": "每次 LLM 请求时注入的提示文本，告诉 LLM 用什么格式返回好感度变化。LLM 回复中的 <affection>±N</affection> 标记会被自动提取并更新好感度，标记本身不会显示给用户。建议包含严格的增减规则，防止好感度被快速刷满。",
+    "obvious_hint": true,
+    "default": "请根据对话内容，在回复中使用 <affection>±N</affection> 标记表示好感度变化，N 为整数。规则：1.无明显变化则不添加标记；2.单次变化绝对值不超过{max_change}；3.好感度增长应缓慢，普通友好对话最多+1，特别感动或深刻交流才可+2~+3；4.好感度下降可以比上升稍快，但单次不超过-{max_change}；5.不要每条消息都加标记，大部分对话好感度不应变化。"
+  },
+  "max_affection_change": {
+    "type": "int",
+    "description": "单次好感度变化上限",
+    "hint": "LLM 单次返回的好感度变化绝对值的最大值。超过此值的 <affection>±N</affection> 标记会被自动截断到此值。用于防止 LLM 一次给出过大的好感度变化。设为 0 表示不限制。",
+    "obvious_hint": true,
+    "default": 5
+  },
+  "activation_threshold": {
+    "type": "int",
+    "description": "激活阈值",
+    "hint": "好感度低于此值时，同时激活回复概率判定和冷淡提示。高于或等于此值时正常回复，不注入冷淡提示。例如设为 0，则好感度为负数时才触发。",
+    "obvious_hint": true,
+    "default": 0
+  },
+  "min_reply_probability": {
+    "type": "float",
+    "description": "最低回复概率",
+    "hint": "好感度在最小值时的回复概率。0.0 表示完全不回复，0.3 表示 30% 概率回复。范围 0.0~1.0。好感度从激活阈值到最小值之间按线性插值计算概率。",
+    "obvious_hint": true,
+    "default": 0.0
+  },
+  "cold_hint_template": {
+    "type": "string",
+    "description": "冷淡提示模板",
+    "hint": "好感度低于激活阈值时注入的提示文本，影响 LLM 的回复语气，使其变得冷淡。",
+    "default": "你现在对对方很冷淡，不想多说话，回复尽量简短。"
+  },
+  "freeze_duration": {
+    "type": "float",
+    "description": "冻结时长（小时）",
+    "hint": "回复概率降为 0 后，进入冻结期。冻结期内完全不回复用户。冻结期结束后，回复概率会逐渐恢复。",
+    "obvious_hint": true,
+    "default": 24.0
+  },
+  "recovery_rate": {
+    "type": "float",
+    "description": "冻结恢复速率（%/小时）",
+    "hint": "冻结期结束后，每小时恢复的回复概率百分比。例如 5.0 表示每小时恢复 5% 的回复概率，直到回到正常计算值。",
+    "obvious_hint": true,
+    "default": 5.0
+  },
+  "enable_decay": {
+    "type": "bool",
+    "description": "启用好感度衰减",
+    "hint": "开启后，用户长时间不聊天，好感度会缓慢降低。",
+    "obvious_hint": true,
+    "default": true
+  },
+  "decay_timeout": {
+    "type": "float",
+    "description": "衰减超时（小时）",
+    "hint": "超过此时间未聊天，好感度开始衰减。例如 48.0 表示两天不聊天后开始衰减。",
+    "obvious_hint": true,
+    "default": 48.0
+  },
+  "decay_rate": {
+    "type": "float",
+    "description": "衰减速率（点/小时）",
+    "hint": "超时后每小时减少的好感度点数。例如 1.0 表示每小时减少 1 点好感度。",
+    "obvious_hint": true,
+    "default": 1.0
+  },
+  "decay_floor": {
+    "type": "int",
+    "description": "衰减下限",
+    "hint": "好感度衰减不会低于此值。防止衰减过度导致好感度无限下降。",
+    "obvious_hint": true,
+    "default": -100
+  },
+  "view_rate_limit_window": {
+    "type": "int",
+    "description": "查看速率限制-时间窗口（分钟）",
+    "hint": "与「查看速率限制-最大次数」配合使用。在该时间窗口内，查看指令最多触发指定次数。",
+    "default": 5
+  },
+  "view_rate_limit_max": {
+    "type": "int",
+    "description": "查看速率限制-最大次数",
+    "hint": "在时间窗口内，同一个群最多允许触发查看指令的次数。超过后提示「查询过于频繁」。",
+    "default": 3
+  }
+}

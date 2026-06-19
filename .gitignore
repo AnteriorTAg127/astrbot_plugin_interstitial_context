@@ -188,6 +188,9 @@ cython_debug/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# 开发过程文件
+开发/
+
 # Ruff stuff:
 .ruff_cache/
 

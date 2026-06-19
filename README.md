@@ -1,14 +1,45 @@
-# astrbot-plugin-helloworld
+# astrbot_plugin_interstitial_context
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+轻量上下文注入插件 — 根据好感度和时间区间变化，向 LLM 请求注入动态上下文，并从 LLM 回复中解析好感度变化。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 功能
 
-# Supports
+- **好感度系统**：自管理好感度，支持负数、可配置范围和初始值、范围段自定义显示
+- **LLM 驱动好感度变化**：自动注入提示让 LLM 用 `<affection>±N</affection>` 标记返回变化，插件解析并更新
+- **时间区间注入**：分钟级颗粒度，格式完全自定义，同一区间不重复注入
+- **变更注入**：好感段/时间区间/用户任一变化时才注入，最小化额外 token
+- **回复概率**：线性插值计算，低好感时概率不回复+冷淡提示，冻结与恢复机制
+- **好感度衰减**：超时后按速率衰减，有衰减下限
+- **管理指令**：`/好感度` 指令组（查看/设置/增加/减少/重置）
+
+## 安装
+
+在 AstrBot 插件市场搜索 `轻量上下文注入` 安装，或手动克隆到 `data/plugins/`。
+
+## 指令
+
+| 指令 | 参数 | 权限 | 说明 |
+|------|-----|------|------|
+| /好感度 查看 | （可选@用户） | 普通用户 | 查看好感度（有速率限制） |
+| /好感度 设置 | 数值 | 管理员 | 设置好感度 |
+| /好感度 增加 | 数值 | 管理员 | 增加好感度 |
+| /好感度 减少 | 数值 | 管理员 | 减少好感度 |
+| /好感度 重置 | - | 管理员 | 重置好感度为初始值 |
+
+## 配置
+
+参考插件 WebUI 配置面板。主要配置项：
+
+- 好感度范围（最小值/最大值/初始值）
+- 好感规则（范围段与显示文字）
+- 好感度显示模式（纯数值/纯文字/数值+文字）
+- 时间粒度与格式模板
+- 注入模板与好感度变化提示
+- 回复概率（线性插值、冷淡提示、冻结恢复）
+- 好感度衰减（超时、速率、下限）
+- 查看指令速率限制
+
+## 支持
 
 - [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+- [AstrBot Plugin Development Docs](https://docs.astrbot.app/dev/star/plugin-new.html)
