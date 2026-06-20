@@ -628,10 +628,12 @@ class InterstitialContextPlugin(Star):
 </div>
 </body>
 </html>"""
+        # 视口设为内容宽高，full_page=True 会按实际内容扩展
+        # 宽度 = 卡片 560 + 左右 padding 64；高度压到 1 避免默认 720px 的空白
         url = await self.html_render(
             tmpl,
             {"rank_data": rank_data, "group_name": group_name},
-            options={"viewport": {"width": 624}},
+            options={"viewport_width": 624, "viewport_height": 1},
         )
         yield event.image_result(url)
 
