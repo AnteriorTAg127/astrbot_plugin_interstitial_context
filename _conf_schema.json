@@ -236,5 +236,11 @@
     "hint": "排行命令最多显示的用户数量，防止图片过长。用户指定超过此值时会被截断。",
     "obvious_hint": true,
     "default": 20
+  },
+  "t2i_endpoint": {
+    "type": "string",
+    "description": "T2I 渲染端点",
+    "hint": "排行卡片的渲染 API 地址。默认使用本地 T2I 服务。格式如 http://x.x.x.x:8999/text2img",
+    "default": "http://192.168.0.47:8999/text2img"
   }
 }

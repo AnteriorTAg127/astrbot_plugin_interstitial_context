@@ -2,6 +2,10 @@ import re
 import random
 from datetime import datetime
 
+import aiohttp
+import ssl
+import certifi
+
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
@@ -629,13 +633,39 @@ class InterstitialContextPlugin(Star):
 </body>
 </html>"""
         # viewport_width 匹配卡片 700px，viewport_height=1 配合 full_page 按内容高度裁剪
-        # type=png 避免 JPEG quality=40 压缩造成文字模糊
-        url = await self.html_render(
+        # 绕过 AstrBot 默认 quality=40，直接调 T2I API
+        url = await self._t2i_rank_render(
             tmpl,
             {"rank_data": rank_data, "group_name": group_name},
-            options={"viewport_width": 700, "viewport_height": 1, "type": "png"},
         )
         yield event.image_result(url)
+
+    async def _t2i_rank_render(self, tmpl: str, data: dict) -> str:
+        """绕过 AstrBot render_custom_template，直接调 T2I API"""
+        t2i_base = self.config.get(
+            "t2i_endpoint", "http://192.168.0.47:8999/text2img"
+        ).rstrip("/")
+        payload = {
+            "tmpl": tmpl,
+            "json": True,
+            "tmpldata": data,
+            "options": {
+                "full_page": True,
+                "type": "png",
+                "viewport_width": 700,
+                "viewport_height": 1,
+            },
+        }
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(trust_env=True, connector=connector) as session:
+            async with session.post(
+                f"{t2i_base}/generate", json=payload
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"T2I render failed: HTTP {resp.status}")
+                ret = await resp.json()
+                return f"{t2i_base}/{ret['data']['id']}"
 
     def _check_rate_limit(self, group_id: str) -> bool:
         """检查查看指令速率限制"""
