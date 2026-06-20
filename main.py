@@ -600,40 +600,40 @@ class InterstitialContextPlugin(Star):
   </style>
 </head>
 <body>
-<div style="width: 560px; font-family: 'Microsoft YaHei', sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 16px; padding: 32px; color: #e0e0e0;">
-  <div style="text-align: center; margin-bottom: 24px;">
-    <h2 style="margin: 0; font-size: 24px; color: #e94560;">{{ group_name }} 好感度排行</h2>
-    <p style="margin: 4px 0 0; font-size: 13px; color: #888;">TOP {{ rank_data|length }}</p>
+<div style="width: 700px; font-family: 'Microsoft YaHei', sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 20px; padding: 40px; color: #e0e0e0;">
+  <div style="text-align: center; margin-bottom: 28px;">
+    <h2 style="margin: 0; font-size: 30px; color: #e94560;">{{ group_name }} 好感度排行</h2>
+    <p style="margin: 8px 0 0; font-size: 15px; color: #888;">TOP {{ rank_data|length }}</p>
   </div>
   {% for item in rank_data %}
-  <div style="display: flex; align-items: center; padding: 12px 16px; margin-bottom: 8px; background: rgba(255,255,255,0.06); border-radius: 12px; {% if item.rank <= 3 %}border: 1px solid rgba(233,69,96,0.3);{% endif %}">
-    <div style="width: 36px; text-align: center; font-size: 20px; font-weight: bold; {% if item.rank == 1 %}color: #ffd700;{% elif item.rank == 2 %}color: #c0c0c0;{% elif item.rank == 3 %}color: #cd7f32;{% else %}color: #888;{% endif %}">
+  <div style="display: flex; align-items: center; padding: 14px 20px; margin-bottom: 10px; background: rgba(255,255,255,0.06); border-radius: 14px; {% if item.rank <= 3 %}border: 1px solid rgba(233,69,96,0.3);{% endif %}">
+    <div style="width: 40px; text-align: center; font-size: 25px; font-weight: bold; {% if item.rank == 1 %}color: #ffd700;{% elif item.rank == 2 %}color: #c0c0c0;{% elif item.rank == 3 %}color: #cd7f32;{% else %}color: #888;{% endif %}">
       {{ item.rank }}
     </div>
     {% if item.avatar %}
-    <img src="{{ item.avatar }}" style="width: 44px; height: 44px; border-radius: 50%; margin: 0 12px; object-fit: cover;" />
+    <img src="{{ item.avatar }}" style="width: 48px; height: 48px; border-radius: 50%; margin: 0 16px; object-fit: cover;" />
     {% else %}
-    <div style="width: 44px; height: 44px; border-radius: 50%; margin: 0 12px; background: #333; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #666;">{{ item.nickname[0] }}</div>
+    <div style="width: 48px; height: 48px; border-radius: 50%; margin: 0 16px; background: #333; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #666;">{{ item.nickname[0] }}</div>
     {% endif %}
     <div style="flex: 1; min-width: 0;">
-      <div style="font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.nickname }}</div>
-      <div style="font-size: 12px; color: #888; margin-top: 2px;">ID: {{ item.user_id }}</div>
+      <div style="font-size: 16px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.nickname }}</div>
+      <div style="font-size: 13px; color: #888; margin-top: 3px;">ID: {{ item.user_id }}</div>
     </div>
-    <div style="text-align: right; margin-left: 12px;">
-      <div style="font-size: 18px; font-weight: bold; {% if item.affection >= 0 %}color: #4ecca3;{% else %}color: #e94560;{% endif %}">{{ item.affection }}</div>
-      <div style="font-size: 12px; color: #aaa; margin-top: 2px;">{{ item.level }}</div>
+    <div style="text-align: right; margin-left: 16px;">
+      <div style="font-size: 20px; font-weight: bold; {% if item.affection >= 0 %}color: #4ecca3;{% else %}color: #e94560;{% endif %}">{{ item.affection }}</div>
+      <div style="font-size: 13px; color: #aaa; margin-top: 3px;">{{ item.level }}</div>
     </div>
   </div>
   {% endfor %}
 </div>
 </body>
 </html>"""
-        # 视口设为内容宽高，full_page=True 会按实际内容扩展
-        # 宽度 = 卡片 560 + 左右 padding 64；高度压到 1 避免默认 720px 的空白
+        # viewport_width 匹配卡片 700px，viewport_height=1 配合 full_page 按内容高度裁剪
+        # type=png 避免 JPEG quality=40 压缩造成文字模糊
         url = await self.html_render(
             tmpl,
             {"rank_data": rank_data, "group_name": group_name},
-            options={"viewport_width": 624, "viewport_height": 1},
+            options={"viewport_width": 700, "viewport_height": 1, "type": "png"},
         )
         yield event.image_result(url)
 
