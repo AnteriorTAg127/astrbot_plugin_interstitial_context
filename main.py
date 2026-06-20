@@ -262,6 +262,7 @@ class InterstitialContextPlugin(Star):
             group_name = await self._get_group_name(event, group_id)
             if group_name:
                 static_info = f"[当前对话:群聊{group_name}({group_id})]"
+                await self.db.upsert_session_name(group_id, group_name)
             else:
                 static_info = f"[当前对话:群聊{group_id}]"
         else:
@@ -589,7 +590,16 @@ class InterstitialContextPlugin(Star):
         group_name = await self._get_group_name(event, group_id) or group_id
 
         # HTML 模板渲染排行图片
-        tmpl = """
+        tmpl = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { width: fit-content; background: transparent; }
+  </style>
+</head>
+<body>
 <div style="width: 560px; font-family: 'Microsoft YaHei', sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 16px; padding: 32px; color: #e0e0e0;">
   <div style="text-align: center; margin-bottom: 24px;">
     <h2 style="margin: 0; font-size: 24px; color: #e94560;">{{ group_name }} 好感度排行</h2>
@@ -616,9 +626,12 @@ class InterstitialContextPlugin(Star):
   </div>
   {% endfor %}
 </div>
-"""
+</body>
+</html>"""
         url = await self.html_render(
-            tmpl, {"rank_data": rank_data, "group_name": group_name}
+            tmpl,
+            {"rank_data": rank_data, "group_name": group_name},
+            options={"viewport": {"width": 624}},
         )
         yield event.image_result(url)
 

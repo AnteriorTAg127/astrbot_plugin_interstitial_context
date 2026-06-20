@@ -54,11 +54,20 @@ function renderList() {
         const text = (u.user_id + " " + (u.nickname || "")).toLowerCase();
         return text.includes(search);
       })
-      .map((u) => ({ id: u.user_id, label: u.user_id }));
+      .map((u) => {
+        const label = u.nickname ? `${u.nickname}(${u.user_id})` : u.user_id;
+        return { id: u.user_id, label };
+      });
   } else {
     items = allSessions
-      .filter((s) => String(s).toLowerCase().includes(search))
-      .map((s) => ({ id: s, label: s }));
+      .filter((s) => {
+        const text = (s.session_id + " " + (s.session_name || "")).toLowerCase();
+        return text.includes(search);
+      })
+      .map((s) => {
+        const label = s.session_name ? `${s.session_name}(${s.session_id})` : s.session_id;
+        return { id: s.session_id, label };
+      });
   }
 
   listEl.innerHTML = "";
@@ -103,6 +112,15 @@ async function selectItem(id) {
   }
 }
 
+function getSelectedLabel() {
+  if (currentTab === "user") {
+    const u = allUsers.find((x) => x.user_id === selectedId);
+    return u && u.nickname ? `${u.nickname}(${selectedId})` : selectedId;
+  }
+  const s = allSessions.find((x) => x.session_id === selectedId);
+  return s && s.session_name ? `${s.session_name}(${selectedId})` : selectedId;
+}
+
 function renderDetailEmpty(msg) {
   $("detail-title").textContent = msg || "请从左侧选择";
   $("btn-add").style.display = "none";
@@ -115,10 +133,11 @@ function renderDetailEmpty(msg) {
 function renderDetail() {
   const tbody = $("detail-tbody");
   tbody.innerHTML = "";
+  const label = getSelectedLabel();
 
   if (!currentRecords.length) {
     $("detail-title").textContent =
-      currentTab === "user" ? `用户 ${selectedId}` : `会话 ${selectedId}`;
+      currentTab === "user" ? `用户 ${label}` : `会话 ${label}`;
     $("btn-add").style.display = "inline-block";
     $("detail-empty").classList.remove("hidden");
     $("detail-empty").textContent = "暂无记录";
@@ -128,7 +147,7 @@ function renderDetail() {
   $("detail-empty").classList.add("hidden");
   $("btn-add").style.display = "inline-block";
   $("detail-title").textContent =
-    currentTab === "user" ? `用户 ${selectedId}` : `会话 ${selectedId}`;
+    currentTab === "user" ? `用户 ${label}` : `会话 ${label}`;
   $("th-id").textContent = currentTab === "user" ? "会话 ID" : "用户 ID";
 
   for (const r of currentRecords) {

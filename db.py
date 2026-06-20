@@ -36,6 +36,14 @@ _CREATE_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_affection_session_id ON affection(session_id);
 """
 
+# session_info 表 SQL
+_CREATE_SESSION_INFO_SQL = """
+CREATE TABLE IF NOT EXISTS session_info (
+    session_id TEXT PRIMARY KEY,
+    session_name TEXT DEFAULT ''
+);
+"""
+
 
 class AffectionDB:
     """好感度数据库管理器"""
@@ -60,6 +68,7 @@ class AffectionDB:
         async with aiosqlite.connect(self._db_path) as conn:
             await conn.execute(_CREATE_TABLE_SQL)
             await conn.execute(_CREATE_INDEX_SQL)
+            await conn.execute(_CREATE_SESSION_INFO_SQL)
             await conn.commit()
 
         self._initialized = True
@@ -375,15 +384,33 @@ class AffectionDB:
         migrated_count = len(affection_data)
         logger.info(f"[AffectionDB] KV 迁移完成，共迁移 {migrated_count} 条记录")
 
-    async def list_sessions(self) -> list[str]:
-        """获取所有不同的 session_id"""
+    async def upsert_session_name(self, session_id: str, session_name: str):
+        """更新会话名称（群名），不存在则插入"""
         await self._ensure_initialized()
         async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute(
+                """INSERT INTO session_info (session_id, session_name)
+                   VALUES (?, ?)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                       session_name = excluded.session_name""",
+                (session_id, session_name),
+            )
+            await conn.commit()
+
+    async def list_sessions(self) -> list[dict]:
+        """获取所有不同的 session，包含名称"""
+        await self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
-                "SELECT DISTINCT session_id FROM affection ORDER BY session_id"
+                """SELECT DISTINCT a.session_id,
+                       COALESCE(s.session_name, '') as session_name
+                   FROM affection a
+                   LEFT JOIN session_info s ON a.session_id = s.session_id
+                   ORDER BY a.session_id"""
             )
             rows = await cursor.fetchall()
-            return [row[0] for row in rows]
+            return [dict(row) for row in rows]
 
     async def list_users(self) -> list[dict]:
         """获取所有不同的用户（user_id + 最新昵称）"""
