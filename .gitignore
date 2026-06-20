@@ -190,7 +190,7 @@ cython_debug/
 
 # 开发过程文件
 开发/
-
+.trae/rules/
 # Ruff stuff:
 .ruff_cache/
 
