@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>好感度管理</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>好感度管理</h1>
+      </header>
+
+      <!-- 选项卡 -->
+      <nav class="tabs">
+        <button class="tab active" data-tab="user">按用户查看</button>
+        <button class="tab" data-tab="session">按会话查看</button>
+      </nav>
+
+      <!-- 左右布局 -->
+      <div class="main-layout">
+        <!-- 左侧：搜索 + 列表 -->
+        <aside class="sidebar">
+          <div class="search-box">
+            <input id="search-input" type="text" placeholder="搜索..." />
+          </div>
+          <div class="list-wrap">
+            <ul id="id-list"></ul>
+            <p id="list-empty" class="empty-tip hidden">暂无记录</p>
+          </div>
+        </aside>
+
+        <!-- 右侧：详情 -->
+        <section class="detail-panel">
+          <div class="detail-header">
+            <h2 id="detail-title">请从左侧选择</h2>
+            <button id="btn-add" class="accent" style="display:none">添加记录</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th id="th-id">会话 ID</th>
+                  <th>昵称</th>
+                  <th>好感度</th>
+                  <th>级别</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="detail-tbody"></tbody>
+            </table>
+            <p id="detail-empty" class="empty-tip">从左侧选择用户或会话以查看记录</p>
+          </div>
+        </section>
+      </div>
+
+      <!-- 编辑/添加模态框 -->
+      <div id="modal" class="modal hidden">
+        <div class="modal-content">
+          <h3 id="modal-title">添加记录</h3>
+          <label>用户 ID <input id="m-user" type="text" required /></label>
+          <label>会话 ID <input id="m-session" type="text" required /></label>
+          <label>昵称 <input id="m-nickname" type="text" /></label>
+          <label>好感度 <input id="m-affection" type="number" required /></label>
+          <div class="modal-actions">
+            <button id="btn-modal-cancel">取消</button>
+            <button id="btn-modal-ok" class="primary">确定</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 删除确认 -->
+      <div id="confirm-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>确认删除</h3>
+          <p id="confirm-text"></p>
+          <div class="modal-actions">
+            <button id="btn-confirm-cancel">取消</button>
+            <button id="btn-confirm-ok" class="danger">删除</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

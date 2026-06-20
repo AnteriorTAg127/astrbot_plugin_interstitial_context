@@ -8,11 +8,14 @@ from astrbot.api import logger
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.agent.message import TextPart
 from astrbot.api import AstrBotConfig
+from quart import request, jsonify
+
+from .db import AffectionDB
+
+PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(
-    "astrbot_plugin_interstitial_context", "AnteriorTAg127", "轻量上下文注入插件", "1.2.0"
-)
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.3.0")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -21,36 +24,120 @@ class InterstitialContextPlugin(Star):
         self._inject_snapshot = {}  # {cache_key: {affection_range_key, time_segment, user_id}}
         self._freeze_state = {}  # {cache_key: freeze_start_datetime}
         self._rate_limit = {}  # {group_id: {count, window_start}}
+        self._last_cache_cleanup = datetime.now()  # 上次缓存清理时间
 
-    # ==================== 好感度管理 ====================
+        # 数据库
+        self.db = AffectionDB()
+
+        # 注册 Web API（bridge 只支持 GET/POST，update 和 delete 用独立路径）
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/affections", self._api_affections, ["GET"], "查询好感度"
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/affections",
+            self._api_affections_create,
+            ["POST"],
+            "添加好感度",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/affections/update",
+            self._api_affections_update,
+            ["POST"],
+            "修改好感度",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/affections/delete",
+            self._api_affections_delete,
+            ["GET"],
+            "删除好感度",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/sessions",
+            self._api_sessions,
+            ["GET"],
+            "获取会话列表",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/users",
+            self._api_users,
+            ["GET"],
+            "获取用户列表",
+        )
+
+    @filter.on_astrbot_loaded()
+    async def on_loaded(self):
+        """插件加载完成后初始化数据库并迁移旧数据"""
+        await self.db.init_db()
+        await self.db.migrate_from_kv(self.get_kv_data, self.delete_kv_data)
+
+    # ==================== 辅助方法 ====================
+
+    def _cleanup_caches(self):
+        """定期清理内存缓存，移除过期条目"""
+        now = datetime.now()
+        # 每小时最多清理一次
+        if (now - self._last_cache_cleanup).total_seconds() < 3600:
+            return
+        self._last_cache_cleanup = now
+
+        # 清理过期的速率限制窗口
+        window = self.config.get("view_rate_limit_window", 5)
+        expired_groups = [
+            g
+            for g, info in self._rate_limit.items()
+            if (now - info["window_start"]).total_seconds() / 60 > window
+        ]
+        for g in expired_groups:
+            del self._rate_limit[g]
+
+        # 清理冻结状态中已完全恢复的条目（防御性检查）
+        freeze_duration = self.config.get("freeze_duration", 24.0)
+        recovery_rate = self.config.get("recovery_rate", 5.0)
+        recovered_keys = []
+        for key, freeze_start in self._freeze_state.items():
+            elapsed = (now - freeze_start).total_seconds() / 3600
+            if elapsed > freeze_duration:
+                recovery_hours = elapsed - freeze_duration
+                recovered_prob = (recovery_rate / 100.0) * recovery_hours
+                if recovered_prob >= 1.0:
+                    recovered_keys.append(key)
+        for key in recovered_keys:
+            del self._freeze_state[key]
+
+    @staticmethod
+    def _get_session_id(event: AstrMessageEvent) -> str:
+        """获取会话ID，群聊用群ID，私聊用 private:user_id"""
+        group_id = event.get_group_id()
+        if group_id:
+            return group_id
+        return f"private:{event.get_sender_id()}"
 
     def _get_cache_key(self, event: AstrMessageEvent) -> str:
-        """获取缓存key，群聊用群ID+用户ID，私聊用用户ID"""
+        """获取缓存key，群聊用群ID+用户ID，私聊用用户ID（仅用于内存缓存）"""
         group_id = event.get_group_id()
         user_id = event.get_sender_id()
         if group_id:
             return f"{group_id}:{user_id}"
         return f"private:{user_id}"
 
-    async def _get_affection(self, event: AstrMessageEvent) -> int:
-        """获取用户好感度"""
-        key = f"affection:{self._get_cache_key(event)}"
-        val = await self.get_kv_data(key, self.config.get("affection_initial", 0))
-        return int(val)
+    async def _get_group_name(
+        self, event: AstrMessageEvent, group_id: str
+    ) -> str | None:
+        """通过协议端 API 获取群名称，失败返回 None"""
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                    AiocqhttpMessageEvent,
+                )
 
-    async def _set_affection(self, event: AstrMessageEvent, value: int) -> int:
-        """设置用户好感度，返回 clamp 后的实际值"""
-        min_val = self.config.get("affection_min", -100)
-        max_val = self.config.get("affection_max", 100)
-        value = max(min_val, min(max_val, value))
-        key = f"affection:{self._get_cache_key(event)}"
-        await self.put_kv_data(key, value)
-        return value
-
-    async def _adjust_affection(self, event: AstrMessageEvent, delta: int) -> int:
-        """调整好感度，返回新值"""
-        current = await self._get_affection(event)
-        return await self._set_affection(event, current + delta)
+                assert isinstance(event, AiocqhttpMessageEvent)
+                ret = await event.bot.api.call_action(
+                    "get_group_info", group_id=int(group_id)
+                )
+                return ret.get("group_name", "")
+        except Exception as e:
+            logger.debug(f"[InterstitialContext] 获取群名失败: {e}")
+        return None
 
     # ==================== 好感规则匹配 ====================
 
@@ -99,7 +186,13 @@ class InterstitialContextPlugin(Star):
         end_h, end_m = divmod(end_minutes, 60)
 
         # 时段描述
-        period_map = [(0, "凌晨"), (6, "上午"), (12, "中午"), (14, "下午"), (18, "晚上")]
+        period_map = [
+            (0, "凌晨"),
+            (6, "上午"),
+            (12, "中午"),
+            (14, "下午"),
+            (18, "晚上"),
+        ]
         time_period = "深夜"
         for threshold, label in period_map:
             if now.hour >= threshold:
@@ -110,8 +203,10 @@ class InterstitialContextPlugin(Star):
         )
         formatted = template.format(
             time_period=time_period,
-            start_h=f"{start_h:02d}", start_m=f"{start_m:02d}",
-            end_h=f"{end_h:02d}", end_m=f"{end_m:02d}",
+            start_h=f"{start_h:02d}",
+            start_m=f"{start_m:02d}",
+            end_h=f"{end_h:02d}",
+            end_m=f"{end_m:02d}",
         )
 
         return (f"{segment_index}", formatted)
@@ -121,17 +216,26 @@ class InterstitialContextPlugin(Star):
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """LLM 请求前注入上下文"""
+        self._cleanup_caches()
         cache_key = self._get_cache_key(event)
         user_id = event.get_sender_id()
         nickname = event.get_sender_name()
         group_id = event.get_group_id()
+        session_id = self._get_session_id(event)
         no_save = self.config.get("inject_no_save", True)
 
+        # 更新昵称
+        if nickname:
+            affection_initial = self.config.get("affection_initial", 0)
+            await self.db.upsert_nickname(
+                user_id, session_id, nickname, affection_initial
+            )
+
         # 1. 计算好感度衰减
-        affection = await self._calculate_decay(event)
+        affection = await self._calculate_decay(user_id, session_id)
 
         # 2. 更新最后活跃时间（无论是否回复都更新，避免衰减持续累积）
-        await self._update_last_active(event)
+        await self._update_last_active(user_id, session_id)
 
         # 3. 回复概率 + 冷淡提示（共享激活阈值）
         activation_threshold = self.config.get("activation_threshold", 0)
@@ -139,7 +243,9 @@ class InterstitialContextPlugin(Star):
             # 低于激活阈值：概率判定 + 冷淡提示
             should_reply = self._check_reply_probability(affection, cache_key)
             if not should_reply:
-                logger.info(f"[InterstitialContext] {cache_key} 好感度 {affection} 低于激活阈值 {activation_threshold}，回复概率判定不回复")
+                logger.info(
+                    f"[InterstitialContext] {cache_key} 好感度 {affection} 低于激活阈值 {activation_threshold}，回复概率判定不回复"
+                )
                 event.stop_event()
                 return
             # 注入冷淡提示（动态，注入用户消息）
@@ -153,7 +259,11 @@ class InterstitialContextPlugin(Star):
 
         # 4. 静态信息注入 system_prompt
         if group_id:
-            static_info = f"[当前对话:群聊{group_id}]"
+            group_name = await self._get_group_name(event, group_id)
+            if group_name:
+                static_info = f"[当前对话:群聊{group_name}({group_id})]"
+            else:
+                static_info = f"[当前对话:群聊{group_id}]"
         else:
             static_info = f"[当前对话:私聊 用户{nickname}({user_id})]"
         hint = self.config.get("affection_change_hint", "")
@@ -221,7 +331,16 @@ class InterstitialContextPlugin(Star):
                     d = max(-max_change, min(max_change, d))
                 deltas.append(d)
             total_delta = sum(deltas)
-            new_affection = await self._adjust_affection(event, total_delta)
+            if max_change > 0:
+                total_delta = max(-max_change, min(max_change, total_delta))
+            min_val = self.config.get("affection_min", -100)
+            max_val = self.config.get("affection_max", 100)
+            user_id = event.get_sender_id()
+            session_id = self._get_session_id(event)
+            nickname = event.get_sender_name()
+            current = await self.db.get_affection(user_id, session_id)
+            new_affection = max(min_val, min(max_val, current + total_delta))
+            await self.db.set_affection(user_id, session_id, new_affection, nickname)
             logger.debug(f"好感度变化: {total_delta:+d}, 新值: {new_affection}")
 
             # 从回复中移除 XML 标记（通过 completion_text setter 修改）
@@ -289,29 +408,27 @@ class InterstitialContextPlugin(Star):
 
     # ==================== 好感度衰减 ====================
 
-    async def _calculate_decay(self, event: AstrMessageEvent) -> int:
+    async def _calculate_decay(self, user_id: str, session_id: str) -> int:
         """计算好感度衰减，返回衰减后的好感度"""
         if not self.config.get("enable_decay", True):
-            return await self._get_affection(event)
+            return await self.db.get_affection(user_id, session_id)
 
-        cache_key = self._get_cache_key(event)
-        last_active_key = f"last_active:{cache_key}"
-        last_active_str = await self.get_kv_data(last_active_key, None)
+        last_active_str = await self.db.get_last_active(user_id, session_id)
 
         if not last_active_str:
-            return await self._get_affection(event)
+            return await self.db.get_affection(user_id, session_id)
 
         try:
             last_active = datetime.fromisoformat(last_active_str)
         except (ValueError, TypeError):
-            return await self._get_affection(event)
+            return await self.db.get_affection(user_id, session_id)
 
         now = datetime.now()
         elapsed_hours = (now - last_active).total_seconds() / 3600
         decay_timeout = self.config.get("decay_timeout", 48.0)
 
         if elapsed_hours <= decay_timeout:
-            return await self._get_affection(event)
+            return await self.db.get_affection(user_id, session_id)
 
         # 超时，计算衰减
         decay_rate = self.config.get("decay_rate", 1.0)
@@ -319,18 +436,23 @@ class InterstitialContextPlugin(Star):
         overtime = elapsed_hours - decay_timeout
         decay_amount = overtime * decay_rate
 
-        current = await self._get_affection(event)
+        current = await self.db.get_affection(user_id, session_id)
         new_value = max(current - decay_amount, decay_floor)
-        new_value = await self._set_affection(event, int(new_value))
+        # clamp
+        min_val = self.config.get("affection_min", -100)
+        max_val = self.config.get("affection_max", 100)
+        new_value = max(min_val, min(max_val, int(new_value)))
+        await self.db.set_affection(user_id, session_id, new_value)
 
         logger.debug(f"好感度衰减: {current} -> {new_value} (超时{overtime:.1f}小时)")
         return new_value
 
-    async def _update_last_active(self, event: AstrMessageEvent):
+    async def _update_last_active(self, user_id: str, session_id: str):
         """更新最后活跃时间"""
-        cache_key = self._get_cache_key(event)
-        last_active_key = f"last_active:{cache_key}"
-        await self.put_kv_data(last_active_key, datetime.now().isoformat())
+        affection_initial = self.config.get("affection_initial", 0)
+        await self.db.update_last_active(
+            user_id, session_id, datetime.now().isoformat(), affection_initial
+        )
 
     # ==================== 管理指令 ====================
 
@@ -347,7 +469,9 @@ class InterstitialContextPlugin(Star):
             yield event.plain_result("查询过于频繁，请稍后再试")
             return
 
-        affection = await self._get_affection(event)
+        user_id = event.get_sender_id()
+        session_id = self._get_session_id(event)
+        affection = await self.db.get_affection(user_id, session_id)
         display = self._render_affection_display(affection)
         yield event.plain_result(f"你的好感度：{display}")
 
@@ -359,7 +483,12 @@ class InterstitialContextPlugin(Star):
         parts = message_str.split()
         try:
             value = int(parts[-1])
-            new_value = await self._set_affection(event, value)
+            user_id = event.get_sender_id()
+            session_id = self._get_session_id(event)
+            nickname = event.get_sender_name()
+            new_value = await self.db.set_affection(
+                user_id, session_id, value, nickname
+            )
             yield event.plain_result(f"好感度已设置为 {new_value}")
         except (ValueError, IndexError):
             yield event.plain_result("格式：/好感度 设置 <数值>")
@@ -372,7 +501,12 @@ class InterstitialContextPlugin(Star):
         parts = message_str.split()
         try:
             delta = int(parts[-1])
-            new_value = await self._adjust_affection(event, delta)
+            user_id = event.get_sender_id()
+            session_id = self._get_session_id(event)
+            nickname = event.get_sender_name()
+            new_value = await self.db.adjust_affection(
+                user_id, session_id, delta, nickname
+            )
             yield event.plain_result(f"好感度 +{delta}，当前 {new_value}")
         except (ValueError, IndexError):
             yield event.plain_result("格式：/好感度 增加 <数值>")
@@ -385,7 +519,12 @@ class InterstitialContextPlugin(Star):
         parts = message_str.split()
         try:
             delta = int(parts[-1])
-            new_value = await self._adjust_affection(event, -delta)
+            user_id = event.get_sender_id()
+            session_id = self._get_session_id(event)
+            nickname = event.get_sender_name()
+            new_value = await self.db.adjust_affection(
+                user_id, session_id, -delta, nickname
+            )
             yield event.plain_result(f"好感度 -{delta}，当前 {new_value}")
         except (ValueError, IndexError):
             yield event.plain_result("格式：/好感度 减少 <数值>")
@@ -395,8 +534,93 @@ class InterstitialContextPlugin(Star):
     async def reset_affection(self, event: AstrMessageEvent):
         """重置好感度（管理员）"""
         initial = self.config.get("affection_initial", 0)
-        new_value = await self._set_affection(event, initial)
+        user_id = event.get_sender_id()
+        session_id = self._get_session_id(event)
+        nickname = event.get_sender_name()
+        new_value = await self.db.set_affection(user_id, session_id, initial, nickname)
         yield event.plain_result(f"好感度已重置为 {new_value}")
+
+    @affection_cmd.command("排行")
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def rank_affection(self, event: AstrMessageEvent, count: int = 0):
+        """好感度排行（群聊）"""
+        group_id = event.get_group_id()
+        if not group_id:
+            yield event.plain_result("此指令仅在群聊中可用")
+            return
+
+        default_count = self.config.get("rank_default_count", 10)
+        max_count = self.config.get("rank_max_count", 20)
+        n = count if count > 0 else default_count
+        n = min(n, max_count)
+
+        ranking = await self.db.get_ranking(group_id, n)
+        if not ranking:
+            yield event.plain_result("暂无好感度数据")
+            return
+
+        # 获取头像 URL
+        avatar_map = {}  # user_id -> avatar_url
+        if event.get_platform_name() == "aiocqhttp":
+            for entry in ranking:
+                uid = entry["user_id"]
+                try:
+                    avatar_map[uid] = f"https://q1.qlogo.cn/g?b=qq&nk={uid}&s=640"
+                except Exception:
+                    avatar_map[uid] = ""
+
+        # 构建排行数据
+        rank_data = []
+        for i, entry in enumerate(ranking):
+            affection = entry["affection"]
+            level = self._match_affection_rule(affection)
+            rank_data.append(
+                {
+                    "rank": i + 1,
+                    "user_id": entry["user_id"],
+                    "nickname": entry["nickname"] or entry["user_id"],
+                    "affection": affection,
+                    "level": level,
+                    "avatar": avatar_map.get(entry["user_id"], ""),
+                }
+            )
+
+        # 获取群名
+        group_name = await self._get_group_name(event, group_id) or group_id
+
+        # HTML 模板渲染排行图片
+        tmpl = """
+<div style="width: 560px; font-family: 'Microsoft YaHei', sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); border-radius: 16px; padding: 32px; color: #e0e0e0;">
+  <div style="text-align: center; margin-bottom: 24px;">
+    <h2 style="margin: 0; font-size: 24px; color: #e94560;">{{ group_name }} 好感度排行</h2>
+    <p style="margin: 4px 0 0; font-size: 13px; color: #888;">TOP {{ rank_data|length }}</p>
+  </div>
+  {% for item in rank_data %}
+  <div style="display: flex; align-items: center; padding: 12px 16px; margin-bottom: 8px; background: rgba(255,255,255,0.06); border-radius: 12px; {% if item.rank <= 3 %}border: 1px solid rgba(233,69,96,0.3);{% endif %}">
+    <div style="width: 36px; text-align: center; font-size: 20px; font-weight: bold; {% if item.rank == 1 %}color: #ffd700;{% elif item.rank == 2 %}color: #c0c0c0;{% elif item.rank == 3 %}color: #cd7f32;{% else %}color: #888;{% endif %}">
+      {{ item.rank }}
+    </div>
+    {% if item.avatar %}
+    <img src="{{ item.avatar }}" style="width: 44px; height: 44px; border-radius: 50%; margin: 0 12px; object-fit: cover;" />
+    {% else %}
+    <div style="width: 44px; height: 44px; border-radius: 50%; margin: 0 12px; background: #333; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #666;">{{ item.nickname[0] }}</div>
+    {% endif %}
+    <div style="flex: 1; min-width: 0;">
+      <div style="font-size: 15px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ item.nickname }}</div>
+      <div style="font-size: 12px; color: #888; margin-top: 2px;">ID: {{ item.user_id }}</div>
+    </div>
+    <div style="text-align: right; margin-left: 12px;">
+      <div style="font-size: 18px; font-weight: bold; {% if item.affection >= 0 %}color: #4ecca3;{% else %}color: #e94560;{% endif %}">{{ item.affection }}</div>
+      <div style="font-size: 12px; color: #aaa; margin-top: 2px;">{{ item.level }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+"""
+        url = await self.html_render(
+            tmpl, {"rank_data": rank_data, "group_name": group_name}
+        )
+        yield event.image_result(url)
 
     def _check_rate_limit(self, group_id: str) -> bool:
         """检查查看指令速率限制"""
@@ -421,8 +645,116 @@ class InterstitialContextPlugin(Star):
         info["count"] += 1
         return True
 
+    # ==================== Web API ====================
+
+    async def _api_affections(self):
+        """GET 查询好感度"""
+        user_id = request.args.get("user_id", "")
+        session_id = request.args.get("session_id", "")
+        try:
+            if user_id and session_id:
+                affection = await self.db.get_affection(user_id, session_id)
+                return jsonify(
+                    {
+                        "ok": True,
+                        "data": {
+                            "user_id": user_id,
+                            "session_id": session_id,
+                            "affection": affection,
+                        },
+                    }
+                )
+            elif user_id:
+                records = await self.db.list_by_user(user_id)
+            elif session_id:
+                records = await self.db.list_by_session(session_id)
+            else:
+                return jsonify(
+                    {"ok": False, "error": "需要提供 user_id 或 session_id"}
+                ), 400
+            # 为每条记录附加级别
+            for r in records:
+                r["level"] = self._match_affection_rule(r["affection"])
+            return jsonify({"ok": True, "data": records})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 查询失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_affections_create(self):
+        """POST 添加好感度记录"""
+        data = await request.get_json()
+        user_id = data.get("user_id", "")
+        session_id = data.get("session_id", "")
+        affection = data.get("affection", 0)
+        nickname = data.get("nickname", "")
+        if not user_id or not session_id:
+            return jsonify(
+                {"ok": False, "error": "user_id 和 session_id 不能为空"}
+            ), 400
+        try:
+            value = await self.db.set_affection(
+                user_id, session_id, int(affection), nickname
+            )
+            return jsonify({"ok": True, "data": {"affection": value}})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 添加失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_affections_update(self):
+        """PUT 修改好感度"""
+        data = await request.get_json()
+        user_id = data.get("user_id", "")
+        session_id = data.get("session_id", "")
+        affection = data.get("affection")
+        nickname = data.get("nickname", "")
+        if not user_id or not session_id or affection is None:
+            return jsonify(
+                {"ok": False, "error": "user_id、session_id 和 affection 不能为空"}
+            ), 400
+        try:
+            value = await self.db.set_affection(
+                user_id, session_id, int(affection), nickname
+            )
+            return jsonify({"ok": True, "data": {"affection": value}})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 修改失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_affections_delete(self):
+        """DELETE 删除好感度记录"""
+        user_id = request.args.get("user_id", "")
+        session_id = request.args.get("session_id", "")
+        if not user_id or not session_id:
+            return jsonify(
+                {"ok": False, "error": "user_id 和 session_id 不能为空"}
+            ), 400
+        try:
+            ok = await self.db.delete_affection(user_id, session_id)
+            return jsonify({"ok": ok})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 删除失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_sessions(self):
+        """GET 获取所有会话ID列表"""
+        try:
+            sessions = await self.db.list_sessions()
+            return jsonify({"ok": True, "data": sessions})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 获取会话列表失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_users(self):
+        """GET 获取所有用户列表"""
+        try:
+            users = await self.db.list_users()
+            return jsonify({"ok": True, "data": users})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 获取用户列表失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     # ==================== terminate ====================
 
     async def terminate(self):
         """插件卸载时调用"""
-        pass
+        await self.db.close()
