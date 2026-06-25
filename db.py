@@ -44,6 +44,39 @@ CREATE TABLE IF NOT EXISTS session_info (
 );
 """
 
+# freeze_list 表 SQL（用户屏蔽列表）
+_CREATE_FREEZE_LIST_SQL = """
+CREATE TABLE IF NOT EXISTS freeze_list (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    muted_by TEXT NOT NULL,
+    mute_reason TEXT DEFAULT '',
+    mute_start TEXT NOT NULL,
+    mute_duration_minutes INTEGER NOT NULL,
+    is_active INTEGER DEFAULT 1
+);
+"""
+
+# freeze_list 索引 SQL（每条索引单独 execute，aiosqlite.execute 仅支持单语句）
+_CREATE_FREEZE_LIST_INDEX_SESSION_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_freeze_list_session_id ON freeze_list(session_id);"
+)
+_CREATE_FREEZE_LIST_INDEX_USER_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_freeze_list_user_id ON freeze_list(user_id);"
+)
+
+# relationship 表 SQL（关系绑定）
+_CREATE_RELATIONSHIP_SQL = """
+CREATE TABLE IF NOT EXISTS relationship (
+    user_id TEXT PRIMARY KEY,
+    relation_type TEXT NOT NULL,
+    relation_desc TEXT DEFAULT '',
+    bound_by TEXT NOT NULL,
+    bound_at TEXT NOT NULL
+);
+"""
+
 
 class AffectionDB:
     """好感度数据库管理器"""
@@ -69,6 +102,10 @@ class AffectionDB:
             await conn.execute(_CREATE_TABLE_SQL)
             await conn.execute(_CREATE_INDEX_SQL)
             await conn.execute(_CREATE_SESSION_INFO_SQL)
+            await conn.execute(_CREATE_FREEZE_LIST_SQL)
+            await conn.execute(_CREATE_FREEZE_LIST_INDEX_SESSION_SQL)
+            await conn.execute(_CREATE_FREEZE_LIST_INDEX_USER_SQL)
+            await conn.execute(_CREATE_RELATIONSHIP_SQL)
             await conn.commit()
 
         self._initialized = True
@@ -427,3 +464,148 @@ class AffectionDB:
         """关闭数据库连接（aiosqlite 每次操作后自动关闭，此方法保留用于兼容）"""
         self._initialized = False
         logger.debug("[AffectionDB] 数据库连接已关闭")
+
+    # ==================== 屏蔽管理（freeze_list） ====================
+
+    async def add_mute(
+        self, user_id: str, session_id: str, muted_by: str,
+        mute_reason: str, duration_minutes: int
+    ) -> int:
+        """添加屏蔽记录，返回新记录的 id"""
+        await self._ensure_initialized()
+        from datetime import datetime, timezone
+        mute_start = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as conn:
+            cursor = await conn.execute(
+                """INSERT INTO freeze_list
+                       (user_id, session_id, muted_by, mute_reason, mute_start, mute_duration_minutes)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, session_id, muted_by, mute_reason, mute_start, duration_minutes),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def remove_mute(self, mute_id: int) -> bool:
+        """移除屏蔽记录（设为 inactive），返回是否成功"""
+        await self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as conn:
+            cursor = await conn.execute(
+                "UPDATE freeze_list SET is_active = 0 WHERE id = ?",
+                (mute_id,),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def get_active_mutes_by_session(self, session_id: str) -> list[dict]:
+        """获取某会话中仍有效的屏蔽记录（is_active=1 且未过期）"""
+        await self._ensure_initialized()
+        from datetime import datetime, timezone
+        now_ts = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """SELECT id, user_id, session_id, muted_by, mute_reason,
+                       mute_start, mute_duration_minutes, is_active
+                   FROM freeze_list
+                   WHERE session_id = ? AND is_active = 1
+                     AND datetime(mute_start, '+' || mute_duration_minutes || ' minutes') > ?""",
+                (session_id, now_ts),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def list_all_active_mutes(self) -> list[dict]:
+        """获取所有仍有效的屏蔽记录（is_active=1 且未过期），用于管理面板"""
+        await self._ensure_initialized()
+        from datetime import datetime, timezone
+        now_ts = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """SELECT id, user_id, session_id, muted_by, mute_reason,
+                       mute_start, mute_duration_minutes, is_active
+                   FROM freeze_list
+                   WHERE is_active = 1
+                     AND datetime(mute_start, '+' || mute_duration_minutes || ' minutes') > ?
+                   ORDER BY mute_start DESC""",
+                (now_ts,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def check_muted(self, user_id: str, session_id: str) -> dict | None:
+        """检查指定用户是否被屏蔽，返回记录 dict 或 None"""
+        await self._ensure_initialized()
+        from datetime import datetime, timezone
+        now_ts = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                """SELECT id, user_id, session_id, muted_by, mute_reason,
+                       mute_start, mute_duration_minutes, is_active
+                   FROM freeze_list
+                   WHERE user_id = ? AND session_id = ? AND is_active = 1
+                     AND datetime(mute_start, '+' || mute_duration_minutes || ' minutes') > ?
+                   LIMIT 1""",
+                (user_id, session_id, now_ts),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    # ==================== 关系绑定（relationship） ====================
+
+    async def bind_relationship(
+        self, user_id: str, relation_type: str,
+        relation_desc: str, bound_by: str
+    ) -> bool:
+        """绑定用户关系（upsert），返回是否成功"""
+        await self._ensure_initialized()
+        from datetime import datetime, timezone
+        bound_at = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute(
+                """INSERT INTO relationship (user_id, relation_type, relation_desc, bound_by, bound_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       relation_type = excluded.relation_type,
+                       relation_desc = excluded.relation_desc,
+                       bound_by = excluded.bound_by,
+                       bound_at = excluded.bound_at""",
+                (user_id, relation_type, relation_desc, bound_by, bound_at),
+            )
+            await conn.commit()
+            return True
+
+    async def unbind_relationship(self, user_id: str) -> bool:
+        """解绑用户关系，返回是否成功删除"""
+        await self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as conn:
+            cursor = await conn.execute(
+                "DELETE FROM relationship WHERE user_id = ?",
+                (user_id,),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
+    async def get_relationship(self, user_id: str) -> dict | None:
+        """获取指定用户的关系记录，不存在返回 None"""
+        await self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                "SELECT user_id, relation_type, relation_desc, bound_by, bound_at FROM relationship WHERE user_id = ?",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def list_relationships(self) -> list[dict]:
+        """获取所有关系记录"""
+        await self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute(
+                "SELECT user_id, relation_type, relation_desc, bound_by, bound_at FROM relationship ORDER BY bound_at DESC"
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]

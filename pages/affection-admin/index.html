@@ -15,6 +15,8 @@
       <nav class="tabs">
         <button class="tab active" data-tab="user">按用户查看</button>
         <button class="tab" data-tab="session">按会话查看</button>
+        <button class="tab" data-tab="mute">屏蔽管理</button>
+        <button class="tab" data-tab="relationship">关系管理</button>
       </nav>
 
       <!-- 左右布局 -->
@@ -52,6 +54,69 @@
             <p id="detail-empty" class="empty-tip">从左侧选择用户或会话以查看记录</p>
           </div>
         </section>
+
+        <!-- 屏蔽管理面板 -->
+        <section class="detail-panel tab-panel" id="panel-mute" style="display:none">
+          <div class="detail-header">
+            <h2 id="mute-title">屏蔽管理</h2>
+            <button id="btn-add-mute" class="accent">添加屏蔽</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>被屏蔽用户</th>
+                  <th>会话</th>
+                  <th>操作者</th>
+                  <th>原因</th>
+                  <th>时长(分钟)</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="mute-tbody"></tbody>
+            </table>
+            <p id="mute-empty" class="empty-tip">暂无屏蔽记录</p>
+          </div>
+        </section>
+
+        <!-- 关系管理面板 -->
+        <section class="detail-panel tab-panel" id="panel-relationship" style="display:none">
+          <div class="detail-header">
+            <h2 id="rel-title">关系管理</h2>
+            <button id="btn-add-rel" class="accent">添加关系</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>用户ID</th>
+                  <th>关系类型</th>
+                  <th>关系描述</th>
+                  <th>绑定者</th>
+                  <th>绑定时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="rel-tbody"></tbody>
+            </table>
+            <p id="rel-empty" class="empty-tip">暂无关系记录</p>
+          </div>
+          <div class="detail-header" style="margin-top:24px">
+            <h2>预设关系类型（参考）</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>类型</th>
+                  <th>默认描述</th>
+                </tr>
+              </thead>
+              <tbody id="rel-types-tbody"></tbody>
+            </table>
+            <p id="rel-types-empty" class="empty-tip">暂无预设类型</p>
+          </div>
+        </section>
       </div>
 
       <!-- 编辑/添加模态框 -->
@@ -77,6 +142,35 @@
           <div class="modal-actions">
             <button id="btn-confirm-cancel">取消</button>
             <button id="btn-confirm-ok" class="danger">删除</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 屏蔽添加/编辑模态框 -->
+      <div id="mute-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3 id="mute-modal-title">添加屏蔽</h3>
+          <label>被屏蔽用户ID <input id="mu-user" type="text" required /></label>
+          <label>会话ID <input id="mu-session" type="text" required /></label>
+          <label>时长(分钟) <input id="mu-duration" type="number" required /></label>
+          <label>屏蔽原因 <input id="mu-reason" type="text" /></label>
+          <div class="modal-actions">
+            <button id="btn-mute-cancel">取消</button>
+            <button id="btn-mute-ok" class="primary">确定</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 关系添加/编辑模态框 -->
+      <div id="rel-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3 id="rel-modal-title">添加关系</h3>
+          <label>用户ID <input id="r-user" type="text" required /></label>
+          <label>关系类型 <input id="r-type" type="text" required /></label>
+          <label>关系描述 <input id="r-desc" type="text" /></label>
+          <div class="modal-actions">
+            <button id="btn-rel-cancel">取消</button>
+            <button id="btn-rel-ok" class="primary">确定</button>
           </div>
         </div>
       </div>

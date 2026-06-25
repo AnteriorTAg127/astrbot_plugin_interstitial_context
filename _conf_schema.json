@@ -59,6 +59,12 @@
             "description": "显示文字",
             "hint": "好感度在此范围内时显示的文字，如「仇视」「朋友」",
             "default": "仇视"
+          },
+          "change_hint_template": {
+            "type": "string",
+            "description": "语言变化模板",
+            "hint": "好感度在此范围内时注入的语言风格提示。留空则不注入。变量：{affection}=当前好感度数值, {display_text}=当前等级文字。",
+            "default": ""
           }
         }
       }
@@ -68,31 +74,36 @@
         "__template_key": "affection_rule",
         "range_min": -100,
         "range_max": -50,
-        "display_text": "仇视"
+        "display_text": "仇视",
+        "change_hint_template": "[语言风格] 你对该用户极度厌恶（当前好感{affection}/{display_text}），回复极尽冷淡甚至拒绝交流，措辞短促、可流露不耐。"
       },
       {
         "__template_key": "affection_rule",
         "range_min": -49,
         "range_max": 0,
-        "display_text": "陌生"
+        "display_text": "陌生",
+        "change_hint_template": "[语言风格] 你对该用户感到陌生（当前好感{affection}/{display_text}），保持距离感，措辞简短客气、不主动展开话题。"
       },
       {
         "__template_key": "affection_rule",
         "range_min": 1,
         "range_max": 30,
-        "display_text": "眼熟"
+        "display_text": "眼熟",
+        "change_hint_template": "[语言风格] 你对该用户略有印象（当前好感{affection}/{display_text}），语气平和友好但仍较克制。"
       },
       {
         "__template_key": "affection_rule",
         "range_min": 31,
         "range_max": 70,
-        "display_text": "朋友"
+        "display_text": "朋友",
+        "change_hint_template": "[语言风格] 你视该用户为朋友（当前好感{affection}/{display_text}），口吻自然亲切，可主动延展话题。"
       },
       {
         "__template_key": "affection_rule",
         "range_min": 71,
         "range_max": 100,
-        "display_text": "死党"
+        "display_text": "死党",
+        "change_hint_template": "[语言风格] 你视该用户为死党（当前好感{affection}/{display_text}），语气热络、可适度亲昵打趣。"
       }
     ]
   },
@@ -112,15 +123,29 @@
   },
   "inject_template": {
     "type": "string",
-    "description": "注入模板",
-    "hint": "变更时注入到 LLM 上下文的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度显示文本, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。",
+    "description": "上下文注入模板（用户消息侧）",
+    "hint": "变更时注入到 LLM 用户消息的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度显示文本, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。",
     "obvious_hint": true,
     "default": "<{nickname}好感{affection_display}> <{time_segment}>"
+  },
+  "relationship_inject_template_private": {
+    "type": "string",
+    "description": "关系注入模板 - 私聊（system prompt 侧）",
+    "hint": "私聊场景下，已绑定关系的用户在 LLM system prompt 中注入的模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {relation_type}=关系类型, {relation_desc}=关系描述。留空则私聊不注入关系。",
+    "obvious_hint": true,
+    "default": "[关系设定] 你与对方的关系为「{relation_type}」。{relation_desc}"
+  },
+  "relationship_inject_template_group": {
+    "type": "string",
+    "description": "关系注入模板 - 群聊（跟随上下文注入模板）",
+    "hint": "群聊场景下，已绑定关系的用户在用户消息侧注入的模板，会拼接在 inject_template 之后。短小为佳，避免占用过多上下文。可用变量：{user_id}=用户ID, {nickname}=昵称, {relation_type}=关系类型, {relation_desc}=关系描述。留空则群聊不注入关系。",
+    "obvious_hint": true,
+    "default": "<{nickname}与你的关系:{relation_type}>"
   },
   "inject_no_save": {
     "type": "bool",
     "description": "注入内容不持久化",
-    "hint": "开启后，注入的用户消息内容（好感度、时间区间、冷淡提示）标记为临时内容，不保存到对话历史。副作用：每轮对话都会重新注入（因为历史中没有记录）。关闭后，注入内容会保存到对话历史，但变更检测生效时同一区间内不会重复注入。",
+    "hint": "开启后，注入的用户消息内容（好感度、时间区间等）标记为临时内容，不保存到对话历史。副作用：每轮对话都会重新注入（因为历史中没有记录）。关闭后，注入内容会保存到对话历史，但变更检测生效时同一区间内不会重复注入。",
     "obvious_hint": true,
     "default": true
   },
@@ -152,7 +177,7 @@
   "activation_threshold": {
     "type": "int",
     "description": "激活阈值",
-    "hint": "好感度低于此值时，同时激活回复概率判定和冷淡提示。高于或等于此值时正常回复，不注入冷淡提示。例如设为 0，则好感度为负数时才触发。",
+    "hint": "好感度低于此值时激活回复概率判定（可能不回复）。高于或等于此值时正常回复。语气冷淡感请通过好感规则中的 change_hint_template 表达，不再使用独立的冷淡模板。例如设为 0，则好感度为负数时才触发概率不回复。",
     "obvious_hint": true,
     "default": 0
   },
@@ -162,12 +187,6 @@
     "hint": "好感度在最小值时的回复概率。0.0 表示完全不回复，0.3 表示 30% 概率回复。范围 0.0~1.0。好感度从激活阈值到最小值之间按线性插值计算概率。",
     "obvious_hint": true,
     "default": 0.0
-  },
-  "cold_hint_template": {
-    "type": "string",
-    "description": "冷淡提示模板",
-    "hint": "好感度低于激活阈值时注入的提示文本，影响 LLM 的回复语气，使其变得冷淡。",
-    "default": "你现在对对方很冷淡，不想多说话，回复尽量简短。"
   },
   "freeze_duration": {
     "type": "float",
@@ -240,7 +259,90 @@
   "t2i_endpoint": {
     "type": "string",
     "description": "T2I 渲染端点",
-    "hint": "排行卡片的渲染 API 地址。默认使用本地 T2I 服务。格式如 http://x.x.x.x:8999/text2img",
-    "default": "http://192.168.0.47:8999/text2img"
+    "hint": "排行卡片的渲染 API 地址。格式如 http://x.x.x.x:8999/text2img",
+    "default": "https://t2i.soulter.top/text2img"
+  },
+  "mute_affection_threshold": {
+    "type": "int",
+    "description": "屏蔽好感度阈值",
+    "hint": "调用者好感度低于此值才能使用屏蔽工具。例如 -50 表示好感度低于 -50 才能屏蔽别人。",
+    "obvious_hint": true,
+    "default": -50
+  },
+  "relationship_min_affection": {
+    "type": "int",
+    "description": "关系绑定好感度下限",
+    "hint": "被绑定的用户好感度必须达到此值才能绑定关系。例如 30 表示好感度至少 30 才能被绑定关系。",
+    "obvious_hint": true,
+    "default": 30
+  },
+  "enable_mute": {
+    "type": "bool",
+    "description": "启用临时屏蔽",
+    "hint": "开启后允许 LLM 使用 mute_user 工具屏蔽用户，关闭后屏蔽功能完全禁用。",
+    "obvious_hint": true,
+    "default": true
+  },
+  "enable_relationship": {
+    "type": "bool",
+    "description": "启用关系绑定",
+    "hint": "开启后允许 LLM 使用 bind_relationship 工具绑定关系及使用解绑指令，关闭后关系功能完全禁用。",
+    "obvious_hint": true,
+    "default": true
+  },
+  "enable_affection_change_hint": {
+    "type": "bool",
+    "description": "启用好感度等级语言模板",
+    "hint": "开启后好感度等级的语言变化模板会注入到 LLM 的 system prompt 中，关闭后不注入。",
+    "obvious_hint": true,
+    "default": true
+  },
+  "relationship_type_templates": {
+    "type": "template_list",
+    "description": "预设关系类型",
+    "hint": "为 LLM 提供的预设关系类型模板。LLM 调用 bind_relationship 时可参考这些类型，也可自定义。前端关系管理面板会展示这些预设作为参考。",
+    "obvious_hint": true,
+    "templates": {
+      "relationship_type": {
+        "name": "关系类型",
+        "hint": "一个预设的关系类型定义",
+        "items": {
+          "type": {
+            "type": "string",
+            "description": "关系类型名称",
+            "hint": "如：师徒、主从、朋友、搭档等",
+            "default": "朋友"
+          },
+          "description": {
+            "type": "string",
+            "description": "关系描述模板",
+            "hint": "该关系的默认描述文本，会在绑定时未填描述时作为默认值使用",
+            "default": "你与对方是朋友关系。"
+          }
+        }
+      }
+    },
+    "default": [
+      {
+        "__template_key": "relationship_type",
+        "type": "师徒",
+        "description": "你是对方的师父，请以师父的身份与对方交流，给予指导与教诲。"
+      },
+      {
+        "__template_key": "relationship_type",
+        "type": "主从",
+        "description": "你是对方的从属，请以从属的口吻与对方交流，体现尊敬与服从。"
+      },
+      {
+        "__template_key": "relationship_type",
+        "type": "朋友",
+        "description": "你与对方是要好的朋友，请以朋友的身份轻松交流。"
+      },
+      {
+        "__template_key": "relationship_type",
+        "type": "搭档",
+        "description": "你与对方是合作的搭档，请以平等协作的方式交流。"
+      }
+    ]
   }
 }

@@ -1,25 +1,25 @@
-import re
 import random
+import re
+import ssl
 from datetime import datetime
 
 import aiohttp
-import ssl
 import certifi
+from quart import jsonify, request
 
-from astrbot.api.event import filter, AstrMessageEvent
+import astrbot.api.message_components as Comp
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import LLMResponse, ProviderRequest
 from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
-from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.agent.message import TextPart
-from astrbot.api import AstrBotConfig
-from quart import request, jsonify
 
 from .db import AffectionDB
 
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.3.0")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.0")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -67,12 +67,67 @@ class InterstitialContextPlugin(Star):
             ["GET"],
             "获取用户列表",
         )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/freeze_list",
+            self._api_freeze_list,
+            ["GET"],
+            "查询屏蔽列表",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/freeze_list/add",
+            self._api_freeze_list_add,
+            ["POST"],
+            "添加屏蔽",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/freeze_list/remove",
+            self._api_freeze_list_remove,
+            ["POST"],
+            "解除屏蔽",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/relationships",
+            self._api_relationships,
+            ["GET"],
+            "查询关系列表",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/relationships/add",
+            self._api_relationships_add,
+            ["POST"],
+            "添加关系",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/relationships/unbind",
+            self._api_relationships_unbind,
+            ["POST"],
+            "解绑关系",
+        )
+        self.context.register_web_api(
+            f"/{PLUGIN_NAME}/relationship-types",
+            self._api_relationship_types,
+            ["GET"],
+            "获取预设关系类型",
+        )
 
     @filter.on_astrbot_loaded()
     async def on_loaded(self):
         """插件加载完成后初始化数据库并迁移旧数据"""
         await self.db.init_db()
         await self.db.migrate_from_kv(self.get_kv_data, self.delete_kv_data)
+        # 根据开关动态卸载 LLM 工具，使关闭后对 LLM 完全不可见
+        try:
+            tool_mgr = self.context.get_llm_tool_manager()
+            if not self.config.get("enable_mute", True):
+                tool_mgr.remove_func("mute_user")
+                logger.info("[InterstitialContext] enable_mute=false，已卸载 mute_user 工具")
+            if not self.config.get("enable_relationship", True):
+                tool_mgr.remove_func("bind_relationship")
+                logger.info(
+                    "[InterstitialContext] enable_relationship=false，已卸载 bind_relationship 工具"
+                )
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] 动态卸载 LLM 工具失败: {e}")
 
     # ==================== 辅助方法 ====================
 
@@ -143,6 +198,23 @@ class InterstitialContextPlugin(Star):
             logger.debug(f"[InterstitialContext] 获取群名失败: {e}")
         return None
 
+    def _format_relationship(
+        self, template: str, user_id: str, nickname: str, rel: dict
+    ) -> str:
+        """格式化关系注入模板，格式化失败时回退原文本"""
+        if not template:
+            return ""
+        try:
+            return template.format(
+                user_id=user_id,
+                nickname=nickname or "",
+                relation_type=rel.get("relation_type", ""),
+                relation_desc=rel.get("relation_desc", ""),
+            )
+        except (KeyError, IndexError) as e:
+            logger.warning(f"[InterstitialContext] 关系模板格式化失败: {e}，使用原文本")
+            return template
+
     # ==================== 好感规则匹配 ====================
 
     def _match_affection_rule(self, affection: int) -> str:
@@ -155,6 +227,23 @@ class InterstitialContextPlugin(Star):
             if range_min <= affection <= range_max:
                 return display_text
         return str(affection)
+
+    def _get_level_change_hint(self, affection: int) -> str:
+        """获取当前好感度等级的语言变化模板"""
+        rules = self.config.get("affection_rules", [])
+        for rule in rules:
+            range_min = rule.get("range_min", -100)
+            range_max = rule.get("range_max", 100)
+            if range_min <= affection <= range_max:
+                template = rule.get("change_hint_template", "")
+                if template:
+                    display_text = rule.get("display_text", "")
+                    return template.format(
+                        affection=affection,
+                        display_text=display_text,
+                    )
+                break
+        return ""
 
     def _get_affection_range_key(self, affection: int) -> str:
         """获取好感范围段的唯一标识（用于变更判定）"""
@@ -228,6 +317,16 @@ class InterstitialContextPlugin(Star):
         session_id = self._get_session_id(event)
         no_save = self.config.get("inject_no_save", True)
 
+        # 0. 屏蔽检查（最早执行，跳过所有后续处理）
+        if self.config.get("enable_mute", True):
+            mute_info = await self.db.check_muted(user_id, session_id)
+            if mute_info:
+                logger.info(
+                    f"[InterstitialContext] {cache_key} 被屏蔽，原因: {mute_info.get('mute_reason', '')}"
+                )
+                event.stop_event()
+                return
+
         # 更新昵称
         if nickname:
             affection_initial = self.config.get("affection_initial", 0)
@@ -241,10 +340,9 @@ class InterstitialContextPlugin(Star):
         # 2. 更新最后活跃时间（无论是否回复都更新，避免衰减持续累积）
         await self._update_last_active(user_id, session_id)
 
-        # 3. 回复概率 + 冷淡提示（共享激活阈值）
+        # 3. 回复概率判定（低于激活阈值时按概率不回复；语气冷淡感由等级模板表达）
         activation_threshold = self.config.get("activation_threshold", 0)
         if affection < activation_threshold:
-            # 低于激活阈值：概率判定 + 冷淡提示
             should_reply = self._check_reply_probability(affection, cache_key)
             if not should_reply:
                 logger.info(
@@ -252,14 +350,6 @@ class InterstitialContextPlugin(Star):
                 )
                 event.stop_event()
                 return
-            # 注入冷淡提示（动态，注入用户消息）
-            cold_hint = self.config.get("cold_hint_template", "")
-            if cold_hint:
-                part = TextPart(text=cold_hint)
-                if no_save:
-                    part.mark_as_temp()
-                req.extra_user_content_parts.append(part)
-                logger.debug(f"[InterstitialContext] 注入冷淡提示: {cold_hint}")
 
         # 4. 静态信息注入 system_prompt
         if group_id:
@@ -271,24 +361,61 @@ class InterstitialContextPlugin(Star):
                 static_info = f"[当前对话:群聊{group_id}]"
         else:
             static_info = f"[当前对话:私聊 用户{nickname}({user_id})]"
+
+        # 4a. 好感度变化提示
         hint = self.config.get("affection_change_hint", "")
         if hint:
             max_change = self.config.get("max_affection_change", 5)
             static_info += "\n" + hint.format(max_change=max_change)
+
+        # 4b. 好感度等级语言模板注入（在 affection_change_hint 之后，沿用变更检测机制）
+        # 仅当好感度等级变化时注入一次，同等级不重复注入；no_save 模式下每次都注入。
+        injected_sections = []  # 用于本轮注入日志汇总
+        affection_range_key_for_hint = self._get_affection_range_key(affection)
+        snapshot_for_hint = self._inject_snapshot.get(cache_key, {})
+        level_changed = (
+            snapshot_for_hint.get("affection_range_key") != affection_range_key_for_hint
+            or snapshot_for_hint.get("user_id") != user_id
+        )
+        if self.config.get("enable_affection_change_hint", True) and (level_changed or no_save):
+            rule_hint = self._get_level_change_hint(affection)
+            if rule_hint:
+                static_info += "\n" + rule_hint
+                injected_sections.append(("等级语言模板", rule_hint))
+
+        # 4c. 关系描述注入（独立开关控制）
+        # 私聊用 relationship_inject_template_private 注入到 system prompt
+        # 群聊则在 step 5 跟随 inject_template 注入用户消息
+        rel = None
+        if self.config.get("enable_relationship", True):
+            rel = await self.db.get_relationship(user_id)
+            if rel and not group_id:
+                priv_tpl = self.config.get(
+                    "relationship_inject_template_private",
+                    "[关系设定] 你与对方的关系为「{relation_type}」。{relation_desc}",
+                )
+                if priv_tpl:
+                    rel_text = self._format_relationship(priv_tpl, user_id, nickname, rel)
+                    if rel_text:
+                        static_info += "\n" + rel_text
+                        injected_sections.append(("关系设定/私聊", rel_text))
         if self.config.get("inject_system_prompt_position", "before") == "before":
             req.system_prompt = static_info + "\n" + req.system_prompt
         else:
             req.system_prompt += "\n" + static_info
 
-        # 5. 动态信息注入用户消息（好感度、时间区间、变化提示）
+        # 5. 动态信息注入用户消息（好感度、时间区间、群聊关系）
         affection_range_key = self._get_affection_range_key(affection)
         time_segment_key, time_segment_text = self._get_time_segment()
+        # 群聊关系类型也纳入变更检测：关系变化时强制重新注入
+        relation_key = rel.get("relation_type", "") if (rel and group_id) else ""
 
         snapshot = self._inject_snapshot.get(cache_key, {})
         changed = (
             snapshot.get("affection_range_key") != affection_range_key
             or snapshot.get("time_segment") != time_segment_key
             or snapshot.get("user_id") != user_id
+            or snapshot.get("relation_key") != relation_key
         )
 
         if changed or not snapshot or no_save:
@@ -303,20 +430,38 @@ class InterstitialContextPlugin(Star):
                 affection_display=affection_display,
                 time_segment=time_segment_text,
             )
+
+            # 群聊关系：拼接到 inject_text 之后
+            if rel and group_id:
+                group_tpl = self.config.get(
+                    "relationship_inject_template_group",
+                    "<{nickname}与你的关系:{relation_type}>",
+                )
+                if group_tpl:
+                    rel_text = self._format_relationship(group_tpl, user_id, nickname, rel)
+                    if rel_text:
+                        inject_text = inject_text + " " + rel_text
+
             part = TextPart(text=inject_text)
             if no_save:
                 part.mark_as_temp()
             req.extra_user_content_parts.append(part)
-            logger.info(f"[InterstitialContext] 注入上下文: {inject_text}")
+            injected_sections.append(("上下文", inject_text))
 
             # 更新快照
             self._inject_snapshot[cache_key] = {
                 "affection_range_key": affection_range_key,
                 "time_segment": time_segment_key,
                 "user_id": user_id,
+                "relation_key": relation_key,
             }
         else:
             logger.debug(f"[InterstitialContext] {cache_key} 无变更，跳过注入")
+
+        # 汇总打印本轮注入内容（一条日志，便于排查）
+        if injected_sections:
+            parts_str = " | ".join(f"[{name}]{text}" for name, text in injected_sections)
+            logger.info(f"[InterstitialContext] {cache_key} 注入 → {parts_str}")
 
     # ==================== 好感度变化解析（on_llm_response 钩子） ====================
 
@@ -544,6 +689,41 @@ class InterstitialContextPlugin(Star):
         nickname = event.get_sender_name()
         new_value = await self.db.set_affection(user_id, session_id, initial, nickname)
         yield event.plain_result(f"好感度已重置为 {new_value}")
+
+    @affection_cmd.command("解绑关系")
+    async def unbind_relationship_cmd(self, event: AstrMessageEvent):
+        """解绑关系（本人或管理员@他人）"""
+        # 受 enable_relationship 开关控制
+        if not self.config.get("enable_relationship", True):
+            yield event.plain_result("关系绑定功能已禁用")
+            return
+
+        sender_id = event.get_sender_id()
+        # 检查是否有 @ 提及
+        message_chain = event.get_messages()
+        target_user_id = None
+        for comp in message_chain:
+            if isinstance(comp, Comp.At):
+                target_user_id = str(comp.qq)
+                break
+
+        if target_user_id:
+            # 带 @，需要管理员权限
+            if not event.is_admin():
+                yield event.plain_result("解绑他人的关系需要管理员权限")
+                return
+        else:
+            # 不带 @，只能解绑自己
+            target_user_id = sender_id
+
+        ok = await self.db.unbind_relationship(target_user_id)
+        if ok:
+            if target_user_id == sender_id:
+                yield event.plain_result("你的关系已解除")
+            else:
+                yield event.plain_result(f"用户 {target_user_id} 的关系已解除")
+        else:
+            yield event.plain_result(f"用户 {target_user_id} 没有绑定的关系")
 
     @affection_cmd.command("排行")
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
@@ -797,6 +977,244 @@ class InterstitialContextPlugin(Star):
         except Exception as e:
             logger.error(f"[InterstitialContext] API 获取用户列表失败: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ==================== Web API（屏蔽 & 关系） ====================
+
+    async def _api_freeze_list(self):
+        """GET 查询屏蔽列表（不传 session_id 时返回所有有效屏蔽，供管理面板使用）"""
+        session_id = request.args.get("session_id", "")
+        try:
+            if session_id:
+                records = await self.db.get_active_mutes_by_session(session_id)
+            else:
+                records = await self.db.list_all_active_mutes()
+            return jsonify({"ok": True, "data": records})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 查询屏蔽列表失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_freeze_list_remove(self):
+        """POST 解除屏蔽"""
+        data = await request.get_json()
+        mute_id = data.get("id")
+        if not mute_id:
+            return jsonify({"ok": False, "error": "需要提供 id"}), 400
+        try:
+            ok = await self.db.remove_mute(int(mute_id))
+            return jsonify({"ok": ok})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 解除屏蔽失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_freeze_list_add(self):
+        """POST 添加屏蔽"""
+        data = await request.get_json()
+        user_id = data.get("user_id", "")
+        session_id = data.get("session_id", "")
+        duration_minutes = data.get("duration_minutes", 60)
+        reason = data.get("reason", "")
+        muted_by = data.get("muted_by", "admin")
+        if not user_id or not session_id:
+            return jsonify({"ok": False, "error": "user_id 和 session_id 不能为空"}), 400
+        try:
+            mute_id = await self.db.add_mute(
+                user_id=user_id,
+                session_id=session_id,
+                muted_by=muted_by,
+                mute_reason=reason,
+                duration_minutes=int(duration_minutes),
+            )
+            return jsonify({"ok": True, "data": {"id": mute_id}})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 添加屏蔽失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_relationships(self):
+        """GET 查询关系列表"""
+        try:
+            records = await self.db.list_relationships()
+            return jsonify({"ok": True, "data": records})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 查询关系列表失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_relationships_add(self):
+        """POST 添加/编辑关系"""
+        data = await request.get_json()
+        user_id = data.get("user_id", "")
+        relation_type = data.get("relation_type", "")
+        relation_desc = data.get("relation_desc", "")
+        bound_by = data.get("bound_by", "admin")
+        if not user_id or not relation_type:
+            return jsonify({"ok": False, "error": "user_id 和 relation_type 不能为空"}), 400
+        try:
+            ok = await self.db.bind_relationship(
+                user_id=user_id,
+                relation_type=relation_type,
+                relation_desc=relation_desc,
+                bound_by=bound_by,
+            )
+            return jsonify({"ok": ok})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 添加关系失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_relationships_unbind(self):
+        """POST 管理员解绑关系"""
+        data = await request.get_json()
+        user_id = data.get("user_id", "")
+        if not user_id:
+            return jsonify({"ok": False, "error": "需要提供 user_id"}), 400
+        try:
+            ok = await self.db.unbind_relationship(user_id)
+            return jsonify({"ok": ok})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 解绑关系失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    async def _api_relationship_types(self):
+        """GET 获取预设关系类型（从配置 relationship_type_templates 读取）"""
+        try:
+            templates = self.config.get("relationship_type_templates", []) or []
+            data = []
+            for t in templates:
+                # 模板中可能含 __template_key 等元字段，仅提取 type/description
+                if not isinstance(t, dict):
+                    continue
+                data.append(
+                    {
+                        "type": t.get("type", ""),
+                        "description": t.get("description", ""),
+                    }
+                )
+            return jsonify({"ok": True, "data": data})
+        except Exception as e:
+            logger.error(f"[InterstitialContext] API 获取关系类型失败: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
+
+    # ==================== LLM 工具 ====================
+
+    @filter.llm_tool(name="mute_user")
+    async def mute_user_tool(
+        self,
+        event: AstrMessageEvent,
+        user_id: str,
+        session_id: str,
+        duration_minutes: int,
+        reason: str = "",
+    ):
+        """暂时屏蔽用户，在指定时间内该用户不会收到 bot 的回复。
+
+        Args:
+            user_id(string): 被屏蔽用户的 ID
+            session_id(string): 会话 ID（群聊用群 ID，私聊用 private:用户ID）
+            duration_minutes(int): 屏蔽时长，单位分钟
+            reason(string): 屏蔽原因（可选）
+        """
+        if not self.config.get("enable_mute", True):
+            yield event.plain_result("屏蔽功能已禁用")
+            return
+
+        # 检查调用者好感度
+        sender_id = event.get_sender_id()
+        sender_session = self._get_session_id(event)
+        sender_affection = await self.db.get_affection(sender_id, sender_session)
+        threshold = self.config.get("mute_affection_threshold", -50)
+        if sender_affection >= threshold:
+            yield event.plain_result(f"你的好感度({sender_affection})不低于阈值({threshold})，无法使用屏蔽功能")
+            return
+
+        # 参数校验
+        if duration_minutes <= 0:
+            yield event.plain_result("屏蔽时长必须大于 0 分钟")
+            return
+        if duration_minutes > 10080:
+            yield event.plain_result("屏蔽时长不能超过 7 天（10080 分钟）")
+            return
+
+        _ = await self.db.add_mute(
+            user_id=user_id,
+            session_id=session_id,
+            muted_by=sender_id,
+            mute_reason=reason,
+            duration_minutes=duration_minutes,
+        )
+        logger.info(
+            f"[InterstitialContext] {sender_id} 屏蔽用户 {user_id}({session_id}) "
+            f"{duration_minutes}分钟，原因: {reason}"
+        )
+        yield event.plain_result(
+            f"已屏蔽用户 {user_id}，时长 {duration_minutes} 分钟，原因：{reason or '无'}"
+        )
+
+    @filter.llm_tool(name="bind_relationship")
+    async def bind_relationship_tool(
+        self,
+        event: AstrMessageEvent,
+        user_id: str,
+        relation_type: str,
+        relation_desc: str = "",
+    ):
+        """给指定用户绑定一个关系，绑定后会在对话中体现该关系设定。
+
+        Args:
+            user_id(string): 被绑定用户的 ID（全局唯一）
+            relation_type(string): 关系类型名称（如：师徒、主从、搭档）
+            relation_desc(string): 关系描述文本，描述 bot 与该用户的关系（可选，不填则使用默认描述）
+        """
+        if not self.config.get("enable_relationship", True):
+            yield event.plain_result("关系绑定功能已禁用")
+            return
+
+        # 检查被绑定用户好感度：取该用户在当前会话的好感度
+        # 若当前会话没有记录，再回退到该用户在其他会话中的最高好感度
+        session_id = self._get_session_id(event)
+        target_affection = await self.db.get_affection(user_id, session_id)
+        if target_affection == 0:
+            try:
+                user_records = await self.db.list_by_user(user_id)
+            except Exception:
+                user_records = []
+            if user_records:
+                target_affection = max(
+                    (r.get("affection", 0) for r in user_records), default=0
+                )
+        min_affection = self.config.get("relationship_min_affection", 30)
+        if target_affection < min_affection:
+            yield event.plain_result(
+                f"用户 {user_id} 好感度({target_affection})未达到绑定要求({min_affection})"
+            )
+            return
+
+        # 检查是否已有关系
+        existing = await self.db.get_relationship(user_id)
+        if existing:
+            yield event.plain_result(
+                f"用户 {user_id} 已有关系 [{existing['relation_type']}]，如需更换请先解绑"
+            )
+            return
+
+        # 如果未提供描述，优先使用预设模板，最后回退默认描述
+        if not relation_desc:
+            templates = self.config.get("relationship_type_templates", []) or []
+            for t in templates:
+                if isinstance(t, dict) and t.get("type") == relation_type:
+                    relation_desc = t.get("description", "")
+                    break
+        if not relation_desc:
+            relation_desc = f"你是用户的{relation_type}，请以{relation_type}的身份与对方交流。"
+
+        bound_by = event.get_sender_id()
+        ok = await self.db.bind_relationship(
+            user_id=user_id,
+            relation_type=relation_type,
+            relation_desc=relation_desc,
+            bound_by=bound_by,
+        )
+        if ok:
+            yield event.plain_result(f"已为用户 {user_id} 绑定关系：[{relation_type}]")
+        else:
+            yield event.plain_result("绑定关系失败，请稍后重试")
 
     # ==================== terminate ====================
 
