@@ -19,7 +19,7 @@ from .db import AffectionDB
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.0")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.1")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -613,6 +613,7 @@ class InterstitialContextPlugin(Star):
     @affection_cmd.command("查看")
     async def view_affection(self, event: AstrMessageEvent):
         """查看好感度"""
+        event.stop_event()
         # 速率限制检查
         group_id = event.get_group_id() or "private"
         if not self._check_rate_limit(group_id):
@@ -629,6 +630,7 @@ class InterstitialContextPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def set_affection(self, event: AstrMessageEvent):
         """设置好感度（管理员）"""
+        event.stop_event()
         message_str = event.message_str.strip()
         parts = message_str.split()
         try:
@@ -647,6 +649,7 @@ class InterstitialContextPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def add_affection(self, event: AstrMessageEvent):
         """增加好感度（管理员）"""
+        event.stop_event()
         message_str = event.message_str.strip()
         parts = message_str.split()
         try:
@@ -665,6 +668,7 @@ class InterstitialContextPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def sub_affection(self, event: AstrMessageEvent):
         """减少好感度（管理员）"""
+        event.stop_event()
         message_str = event.message_str.strip()
         parts = message_str.split()
         try:
@@ -683,6 +687,7 @@ class InterstitialContextPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def reset_affection(self, event: AstrMessageEvent):
         """重置好感度（管理员）"""
+        event.stop_event()
         initial = self.config.get("affection_initial", 0)
         user_id = event.get_sender_id()
         session_id = self._get_session_id(event)
@@ -693,6 +698,7 @@ class InterstitialContextPlugin(Star):
     @affection_cmd.command("解绑关系")
     async def unbind_relationship_cmd(self, event: AstrMessageEvent):
         """解绑关系（本人或管理员@他人）"""
+        event.stop_event()
         # 受 enable_relationship 开关控制
         if not self.config.get("enable_relationship", True):
             yield event.plain_result("关系绑定功能已禁用")
@@ -729,6 +735,7 @@ class InterstitialContextPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def rank_affection(self, event: AstrMessageEvent, count: int = 0):
         """好感度排行（群聊）"""
+        event.stop_event()
         group_id = event.get_group_id()
         if not group_id:
             yield event.plain_result("此指令仅在群聊中可用")
@@ -1099,39 +1106,37 @@ class InterstitialContextPlugin(Star):
         self,
         event: AstrMessageEvent,
         user_id: str,
-        session_id: str,
         duration_minutes: int,
         reason: str = "",
     ):
-        """暂时屏蔽用户，在指定时间内该用户不会收到 bot 的回复。
+        """暂时屏蔽指定用户，在指定时间内该用户不会收到 bot 的回复。在哪个群聊调用就在哪个群屏蔽，私聊调用则在私聊屏蔽。
 
         Args:
             user_id(string): 被屏蔽用户的 ID
-            session_id(string): 会话 ID（群聊用群 ID，私聊用 private:用户ID）
-            duration_minutes(int): 屏蔽时长，单位分钟
+            duration_minutes(int): 屏蔽时长，单位分钟（最大 10080 = 7 天）
             reason(string): 屏蔽原因（可选）
         """
         if not self.config.get("enable_mute", True):
-            yield event.plain_result("屏蔽功能已禁用")
-            return
+            return "屏蔽功能已禁用"
 
-        # 检查调用者好感度
-        sender_id = event.get_sender_id()
-        sender_session = self._get_session_id(event)
-        sender_affection = await self.db.get_affection(sender_id, sender_session)
+        session_id = self._get_session_id(event)
+
+        # 检查被屏蔽用户好感度：必须低于阈值（说明 bot 已对该用户态度冷淡）
+        target_affection = await self.db.get_affection(user_id, session_id)
         threshold = self.config.get("mute_affection_threshold", -50)
-        if sender_affection >= threshold:
-            yield event.plain_result(f"你的好感度({sender_affection})不低于阈值({threshold})，无法使用屏蔽功能")
-            return
+        if target_affection > threshold:
+            return (
+                f"无法屏蔽：用户 {user_id} 当前好感度({target_affection})高于屏蔽阈值({threshold})，"
+                f"好感度必须降至{threshold}以下才能屏蔽。"
+            )
 
         # 参数校验
         if duration_minutes <= 0:
-            yield event.plain_result("屏蔽时长必须大于 0 分钟")
-            return
+            return "屏蔽时长必须大于 0 分钟"
         if duration_minutes > 10080:
-            yield event.plain_result("屏蔽时长不能超过 7 天（10080 分钟）")
-            return
+            return "屏蔽时长不能超过 7 天（10080 分钟）"
 
+        sender_id = event.get_sender_id()
         _ = await self.db.add_mute(
             user_id=user_id,
             session_id=session_id,
@@ -1143,9 +1148,7 @@ class InterstitialContextPlugin(Star):
             f"[InterstitialContext] {sender_id} 屏蔽用户 {user_id}({session_id}) "
             f"{duration_minutes}分钟，原因: {reason}"
         )
-        yield event.plain_result(
-            f"已屏蔽用户 {user_id}，时长 {duration_minutes} 分钟，原因：{reason or '无'}"
-        )
+        return f"已屏蔽用户 {user_id}，时长 {duration_minutes} 分钟，原因：{reason or '无'}"
 
     @filter.llm_tool(name="bind_relationship")
     async def bind_relationship_tool(
@@ -1155,19 +1158,17 @@ class InterstitialContextPlugin(Star):
         relation_type: str,
         relation_desc: str = "",
     ):
-        """给指定用户绑定一个关系，绑定后会在对话中体现该关系设定。
+        """给指定用户绑定关系，绑定后该用户与 bot 的对话会体现关系设定。全局唯一，一个用户只能绑定一个关系。
 
         Args:
             user_id(string): 被绑定用户的 ID（全局唯一）
-            relation_type(string): 关系类型名称（如：师徒、主从、搭档）
-            relation_desc(string): 关系描述文本，描述 bot 与该用户的关系（可选，不填则使用默认描述）
+            relation_type(string): 关系类型名称（如：师徒、主从、搭档、朋友）
+            relation_desc(string): 关系描述文本（可选，不填则使用预设模板或默认描述）
         """
         if not self.config.get("enable_relationship", True):
-            yield event.plain_result("关系绑定功能已禁用")
-            return
+            return "关系绑定功能已禁用"
 
-        # 检查被绑定用户好感度：取该用户在当前会话的好感度
-        # 若当前会话没有记录，再回退到该用户在其他会话中的最高好感度
+        # 检查被绑定用户好感度：取该用户在当前会话的好感度，查不到则回退全局最高
         session_id = self._get_session_id(event)
         target_affection = await self.db.get_affection(user_id, session_id)
         if target_affection == 0:
@@ -1181,20 +1182,18 @@ class InterstitialContextPlugin(Star):
                 )
         min_affection = self.config.get("relationship_min_affection", 30)
         if target_affection < min_affection:
-            yield event.plain_result(
-                f"用户 {user_id} 好感度({target_affection})未达到绑定要求({min_affection})"
+            return (
+                f"无法绑定关系：用户 {user_id} 当前好感度({target_affection})未达到绑定要求({min_affection})"
             )
-            return
 
-        # 检查是否已有关系
+        # 检查是否已有关系（一对一约束）
         existing = await self.db.get_relationship(user_id)
         if existing:
-            yield event.plain_result(
+            return (
                 f"用户 {user_id} 已有关系 [{existing['relation_type']}]，如需更换请先解绑"
             )
-            return
 
-        # 如果未提供描述，优先使用预设模板，最后回退默认描述
+        # 未提供描述时，优先匹配预设模板，最后回退默认描述
         if not relation_desc:
             templates = self.config.get("relationship_type_templates", []) or []
             for t in templates:
@@ -1212,9 +1211,8 @@ class InterstitialContextPlugin(Star):
             bound_by=bound_by,
         )
         if ok:
-            yield event.plain_result(f"已为用户 {user_id} 绑定关系：[{relation_type}]")
-        else:
-            yield event.plain_result("绑定关系失败，请稍后重试")
+            return f"已为用户 {user_id} 绑定关系：[{relation_type}]"
+        return "绑定关系失败，请稍后重试"
 
     # ==================== terminate ====================
 

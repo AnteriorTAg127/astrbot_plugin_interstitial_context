@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1] - 2026-06-25
+### Fixed
+- **命令穿透 LLM**：所有好感度指令（查看/设置/增加/减少/重置/排行/解绑关系）添加 `event.stop_event()`，防止消息流到 LLM 阶段造成"插件回复 + LLM 回复"双份输出，也避免图片渲染与 LLM 文本并发发送导致的 QQ 内部超时（retcode=1200）
+- **LLM 工具返回值泄漏到群聊**：`mute_user` / `bind_relationship` 从 `yield event.plain_result()` 改为 `return` 字符串，确保工具返回值仅对 LLM 可见
+- **mute_user 好感度检查对象错误**：检查目标从 `sender_id`（调用者）修正为 `user_id`（被屏蔽用户）
+- **mute_user 参数暴露**：移除不必要的 `session_id` 参数，改由 `event` 内部推导
+
 ## [1.4.0] - 2026-06-25
 ### Added
 - **用户临时屏蔽（Mute）**：新增 LLM 工具 `mute_user`，调用者好感度低于 `mute_affection_threshold`（默认 -50）时可屏蔽指定用户，到期自动失效；被屏蔽用户的消息在 `on_llm_request` 早期即被 `stop_event()` 丢弃
