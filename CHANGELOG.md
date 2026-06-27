@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.4.2] - 2026-06-27
+### Fixed
+- **群聊关系称呼串扰**：群聊中前一位发话人是关系绑定对象（如「老婆」）时，下一位非关系对象发言不再被 LLM 误用同一称呼。新增「关系切换去歧义」机制，在群聊维度记录上一位关系发话人，当下一位非该用户的关系对象发言时一次性注入提示「当前发言人是 X，不是你的{关系}「Y」」，注入后立即重置，直到关系对象再次发言才会再触发。
+
+### Added
+- 配置项 `relationship_disambiguation_template`：去歧义提示模板，可用变量 `{user_id} {nickname} {prev_user_id} {prev_nickname} {prev_relation_type} {prev_relation_desc}`。默认值：`<注意：当前发言人是{nickname}({user_id})，不是你的{prev_relation_type}「{prev_nickname}」，请勿混淆称呼>`。留空即关闭该功能。复用 `enable_relationship` 总开关。
+- **bind_relationship 字数约束（软+硬双层）**：
+  - `relation_type` 软限默认 6 字、硬限默认 12 字
+  - `relation_desc` 软限默认 20 字、硬限默认 35 字
+  - 超软限：自动截断后照常写入，返回值告知 LLM
+  - 超硬限：直接拒绝，不写入数据库
+  - 仅校验 LLM 实际传入的内容，`relation_desc` 为空被预设模板回填的情况不参与校验
+  - 新增配置项 `relationship_type_max_length_soft` / `relationship_type_max_length_hard` / `relationship_desc_max_length_soft` / `relationship_desc_max_length_hard`，置 0 关闭对应校验
+  - 工具 docstring 同步告知 LLM 长度建议
+
 ## [1.4.1] - 2026-06-25
 ### Fixed
 - **命令穿透 LLM**：所有好感度指令（查看/设置/增加/减少/重置/排行/解绑关系）添加 `event.stop_event()`，防止消息流到 LLM 阶段造成"插件回复 + LLM 回复"双份输出，也避免图片渲染与 LLM 文本并发发送导致的 QQ 内部超时（retcode=1200）

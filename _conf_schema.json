@@ -142,6 +142,13 @@
     "obvious_hint": true,
     "default": "<{nickname}与你的关系:{relation_type}>"
   },
+  "relationship_disambiguation_template": {
+    "type": "string",
+    "description": "关系切换去歧义提示模板（群聊）",
+    "hint": "群聊中，上一发话人是关系绑定对象、当前发话人不是时，注入一次提示防止 LLM 把称呼用错（如延续「老婆」称呼新发话人）。注入后立即重置，直到关系对象再次发言才会再触发。可用变量：{user_id} {nickname}（当前发话人）, {prev_user_id} {prev_nickname} {prev_relation_type} {prev_relation_desc}。留空则关闭。",
+    "obvious_hint": true,
+    "default": "<注意：当前发言人是{nickname}({user_id})，不是你的{prev_relation_type}「{prev_nickname}」，请勿混淆称呼>"
+  },
   "inject_no_save": {
     "type": "bool",
     "description": "注入内容不持久化",
@@ -275,6 +282,34 @@
     "hint": "被绑定的用户好感度必须达到此值才能绑定关系。例如 30 表示好感度至少 30 才能被绑定关系。",
     "obvious_hint": true,
     "default": 30
+  },
+  "relationship_type_max_length_soft": {
+    "type": "int",
+    "description": "关系类型软上限（字符）",
+    "hint": "LLM 调用 bind_relationship 时传入的 relation_type 超过此长度会被自动截断（仍写入），并在返回中告知 LLM。一般关系类型应控制在几字内（如师徒、朋友、亲密爱人）。置 0 关闭软限校验。",
+    "obvious_hint": true,
+    "default": 6
+  },
+  "relationship_type_max_length_hard": {
+    "type": "int",
+    "description": "关系类型硬上限（字符）",
+    "hint": "relation_type 超过此长度直接拒绝绑定，不写入数据库。用于防止 LLM 把整段描述塞进类型字段。置 0 关闭硬限校验。",
+    "obvious_hint": true,
+    "default": 12
+  },
+  "relationship_desc_max_length_soft": {
+    "type": "int",
+    "description": "关系描述软上限（字符）",
+    "hint": "LLM 调用 bind_relationship 时传入的 relation_desc 超过此长度会被自动截断（仍写入），并在返回中告知 LLM。relation_desc 为空被预设模板回填的情况不参与校验。置 0 关闭软限校验。",
+    "obvious_hint": true,
+    "default": 20
+  },
+  "relationship_desc_max_length_hard": {
+    "type": "int",
+    "description": "关系描述硬上限（字符）",
+    "hint": "relation_desc 超过此长度直接拒绝绑定，不写入数据库。用于防止描述膨胀污染上下文。置 0 关闭硬限校验。",
+    "obvious_hint": true,
+    "default": 35
   },
   "enable_mute": {
     "type": "bool",

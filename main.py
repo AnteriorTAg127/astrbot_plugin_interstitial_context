@@ -19,7 +19,7 @@ from .db import AffectionDB
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.1")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.2")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -28,6 +28,9 @@ class InterstitialContextPlugin(Star):
         self._inject_snapshot = {}  # {cache_key: {affection_range_key, time_segment, user_id}}
         self._freeze_state = {}  # {cache_key: freeze_start_datetime}
         self._rate_limit = {}  # {group_id: {count, window_start}}
+        # 群聊维度：上一位「关系绑定」发话人，用于下一位非该用户发话时一次性注入去歧义提示
+        # {group_id: {"user_id","nickname","relation_type","relation_desc"}}
+        self._last_relation_speaker = {}
         self._last_cache_cleanup = datetime.now()  # 上次缓存清理时间
 
         # 数据库
@@ -442,6 +445,37 @@ class InterstitialContextPlugin(Star):
                     if rel_text:
                         inject_text = inject_text + " " + rel_text
 
+            # 关系切换去歧义：群聊里上一关系发话人 ≠ 当前发话人 → 注入一次提示，注入后立即清除
+            # 该状态在 step 5 末尾（当前发话人本身是关系对象时）刷新
+            if (
+                group_id
+                and self.config.get("enable_relationship", True)
+                and self._last_relation_speaker.get(group_id)
+                and self._last_relation_speaker[group_id].get("user_id") != user_id
+            ):
+                prev = self._last_relation_speaker[group_id]
+                disambig_tpl = self.config.get("relationship_disambiguation_template", "")
+                if disambig_tpl:
+                    try:
+                        disambig_text = disambig_tpl.format(
+                            user_id=user_id,
+                            nickname=nickname,
+                            prev_user_id=prev.get("user_id", ""),
+                            prev_nickname=prev.get("nickname", ""),
+                            prev_relation_type=prev.get("relation_type", ""),
+                            prev_relation_desc=prev.get("relation_desc", ""),
+                        )
+                    except (KeyError, IndexError) as e:
+                        logger.warning(
+                            f"[InterstitialContext] 关系去歧义模板格式化失败: {e}，使用原文本"
+                        )
+                        disambig_text = ""
+                    if disambig_text:
+                        inject_text = inject_text + " " + disambig_text
+                        injected_sections.append(("关系去歧义", disambig_text))
+                # 无论模板是否有效都清除，保证"只注入一次"
+                self._last_relation_speaker.pop(group_id, None)
+
             part = TextPart(text=inject_text)
             if no_save:
                 part.mark_as_temp()
@@ -457,6 +491,16 @@ class InterstitialContextPlugin(Star):
             }
         else:
             logger.debug(f"[InterstitialContext] {cache_key} 无变更，跳过注入")
+
+        # 刷新"上一位关系发话人"（仅群聊、当前发话人本身是关系对象时）
+        # 注意：此处放在 changed 分支外——A 多次连发时也持续刷新，避免昵称/描述滞后
+        if group_id and rel and self.config.get("enable_relationship", True):
+            self._last_relation_speaker[group_id] = {
+                "user_id": user_id,
+                "nickname": nickname,
+                "relation_type": rel.get("relation_type", ""),
+                "relation_desc": rel.get("relation_desc", ""),
+            }
 
         # 汇总打印本轮注入内容（一条日志，便于排查）
         if injected_sections:
@@ -1162,11 +1206,51 @@ class InterstitialContextPlugin(Star):
 
         Args:
             user_id(string): 被绑定用户的 ID（全局唯一）
-            relation_type(string): 关系类型名称（如：师徒、主从、搭档、朋友）
-            relation_desc(string): 关系描述文本（可选，不填则使用预设模板或默认描述）
+            relation_type(string): 关系类型名称（简短，如：师徒、主从、搭档、朋友、爱人），建议不超过 6 字，超过 12 字会被拒绝
+            relation_desc(string): 关系描述文本（可选，不填则使用预设模板或默认描述），建议不超过 20 字，超过 35 字会被拒绝
         """
         if not self.config.get("enable_relationship", True):
             return "关系绑定功能已禁用"
+
+        # 字数校验（仅校验 LLM 实际传入的内容；relation_desc 为空被预设模板回填的不参与校验）
+        relation_type = (relation_type or "").strip()
+        relation_desc_input = (relation_desc or "").strip()
+        if not relation_type:
+            return "无法绑定关系：relation_type 不能为空"
+
+        type_hard = self.config.get("relationship_type_max_length_hard", 12)
+        type_soft = self.config.get("relationship_type_max_length_soft", 6)
+        desc_hard = self.config.get("relationship_desc_max_length_hard", 35)
+        desc_soft = self.config.get("relationship_desc_max_length_soft", 20)
+
+        # 硬限制：直接拒绝
+        if type_hard > 0 and len(relation_type) > type_hard:
+            return (
+                f"无法绑定关系：relation_type 长度({len(relation_type)})超过硬上限({type_hard})，"
+                f"关系类型应简短（如：师徒、朋友、亲密爱人），请勿将描述塞入类型字段"
+            )
+        if desc_hard > 0 and relation_desc_input and len(relation_desc_input) > desc_hard:
+            return (
+                f"无法绑定关系：relation_desc 长度({len(relation_desc_input)})超过硬上限({desc_hard})，"
+                f"请精简描述后重试"
+            )
+
+        # 软限制：截断 + 在返回值中告知
+        truncated_notes = []
+        if type_soft > 0 and len(relation_type) > type_soft:
+            original_len = len(relation_type)
+            relation_type = relation_type[:type_soft]
+            truncated_notes.append(
+                f"relation_type 已从 {original_len} 字截断至 {type_soft} 字"
+            )
+        if desc_soft > 0 and relation_desc_input and len(relation_desc_input) > desc_soft:
+            original_len = len(relation_desc_input)
+            relation_desc_input = relation_desc_input[:desc_soft]
+            truncated_notes.append(
+                f"relation_desc 已从 {original_len} 字截断至 {desc_soft} 字"
+            )
+        # 把（可能被截断后的）输入回写，供后续 desc 回填逻辑使用
+        relation_desc = relation_desc_input
 
         # 检查被绑定用户好感度：取该用户在当前会话的好感度，查不到则回退全局最高
         session_id = self._get_session_id(event)
@@ -1211,7 +1295,10 @@ class InterstitialContextPlugin(Star):
             bound_by=bound_by,
         )
         if ok:
-            return f"已为用户 {user_id} 绑定关系：[{relation_type}]"
+            msg = f"已为用户 {user_id} 绑定关系：[{relation_type}]"
+            if truncated_notes:
+                msg += "；注意：" + "；".join(truncated_notes)
+            return msg
         return "绑定关系失败，请稍后重试"
 
     # ==================== terminate ====================
