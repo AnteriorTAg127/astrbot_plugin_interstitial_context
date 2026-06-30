@@ -19,7 +19,7 @@ from .db import AffectionDB
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.2")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.3")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -371,8 +371,9 @@ class InterstitialContextPlugin(Star):
             max_change = self.config.get("max_affection_change", 5)
             static_info += "\n" + hint.format(max_change=max_change)
 
-        # 4b. 好感度等级语言模板注入（在 affection_change_hint 之后，沿用变更检测机制）
-        # 仅当好感度等级变化时注入一次，同等级不重复注入；no_save 模式下每次都注入。
+        # 4b. 好感度等级语言模板（如「刚刚认识，有点害羞」）随用户消息注入（见 step 5）。
+        # 它会随好感度等级变化，因此私聊/群聊统一走 user prompt，不放进 system_prompt。
+        # 此处仅做等级变更判定，实际拼接在 step 5。
         injected_sections = []  # 用于本轮注入日志汇总
         affection_range_key_for_hint = self._get_affection_range_key(affection)
         snapshot_for_hint = self._inject_snapshot.get(cache_key, {})
@@ -380,11 +381,9 @@ class InterstitialContextPlugin(Star):
             snapshot_for_hint.get("affection_range_key") != affection_range_key_for_hint
             or snapshot_for_hint.get("user_id") != user_id
         )
-        if self.config.get("enable_affection_change_hint", True) and (level_changed or no_save):
-            rule_hint = self._get_level_change_hint(affection)
-            if rule_hint:
-                static_info += "\n" + rule_hint
-                injected_sections.append(("等级语言模板", rule_hint))
+        inject_level_hint = self.config.get("enable_affection_change_hint", True) and (
+            level_changed or no_save
+        )
 
         # 4c. 关系描述注入（独立开关控制）
         # 私聊用 relationship_inject_template_private 注入到 system prompt
@@ -433,6 +432,13 @@ class InterstitialContextPlugin(Star):
                 affection_display=affection_display,
                 time_segment=time_segment_text,
             )
+
+            # 好感度等级语言模板：拼到 inject_text 之后，随用户消息注入（私聊/群聊一致）
+            if inject_level_hint:
+                rule_hint = self._get_level_change_hint(affection)
+                if rule_hint:
+                    inject_text = inject_text + " " + rule_hint
+                    injected_sections.append(("等级语言模板", rule_hint))
 
             # 群聊关系：拼接到 inject_text 之后
             if rel and group_id:
