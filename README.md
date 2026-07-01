@@ -9,7 +9,9 @@
 - **LLM 驱动好感度变化**：自动注入提示让 LLM 用 `<affection>±N</affection>` 标记返回变化，插件解析并更新
 - **时间区间注入**：分钟级颗粒度，格式完全自定义，同一区间不重复注入
 - **变更注入**：好感段/时间区间/用户任一变化时才注入，最小化额外 token
-- **好感度等级语言模板** *(v1.4.0)*：每个等级可配置 `change_hint_template`，等级变化时注入 system prompt，引导 LLM 按当前等级语言风格回复
+- **完整/精简双档注入** *(v1.5.0)*：默认每 10 轮注入一次完整上下文，中间轮次走精简模板（约 25 字），**同一用户连续对话降本 60%+**。等级/关系/时段/用户变化立即触发完整档
+- **上下文标签元指令** *(v1.5.0)*：`context_meta_hint` 一次性写入 system_prompt，供 provider 端 prompt caching 摊销成本
+- **好感度等级语言模板** *(v1.4.0)*：每个等级可配置 `change_hint_template`，等级变化时随用户消息注入，引导 LLM 按当前等级语言风格回复
 - **关系绑定与注入** *(v1.4.0)*：LLM 可通过工具绑定关系（如师徒/主从），关系描述自动注入 system prompt
 
 ### 行为控制
@@ -67,6 +69,8 @@
 - **v1.4.0**：屏蔽 / 关系 / 等级语言模板的独立开关及阈值
 - **v1.4.0**：关系注入模板 `relationship_inject_template`（变量 `{user_id}` / `{relation_type}` / `{relation_desc}`）
 - **v1.4.0**：预设关系类型模板列表 `relationship_type_templates`（type + description）
+- **v1.5.0**：精简注入档 `inject_template_compact` + 开关 `enable_compact_inject` + 兜底周期 `full_inject_interval`（默认 10 轮）
+- **v1.5.0**：`context_meta_hint` 一次性写入 system_prompt，享受 provider 端 prompt caching，摊销后基本零成本
 
 ## 注入内容一览
 
@@ -76,9 +80,15 @@
 |---------|--------|---------|
 | system_prompt | （内置 `[当前对话:...]`） | 每次 LLM 请求 |
 | system_prompt | `affection_change_hint` | 每次 LLM 请求 |
+| system_prompt | `context_meta_hint` *(v1.5.0)* | 每次 LLM 请求，非空时；供 provider 端 prompt caching |
 | system_prompt | `affection_rules[i].change_hint_template` | 好感度等级变化时（同级不重复） |
-| system_prompt | `relationship_inject_template` | 用户已绑定关系时 |
-| user 消息 | `inject_template` | 好感度段 / 时间区间 / 用户变化时 |
+| system_prompt | `relationship_inject_template_private` | 私聊已绑定关系时 |
+| user 消息 | `inject_template`（完整档） | 首次 / 等级/关系/时段/用户变化 / 每 `full_inject_interval` 轮兜底 |
+| user 消息 | `inject_template_compact`（精简档，*(v1.5.0)*） | 完整档条件都不满足时的中间轮次 |
+
+## 升级注意
+
+**v1.4.4 → v1.5.0（推荐升级）**：默认开启精简注入档，同一用户连续对话平均节省 60%+ 注入字数。若希望完全回退到 v1.4.4 行为：设 `enable_compact_inject=false` 或 `full_inject_interval=0`，并清空 `context_meta_hint`。无数据库/配置迁移。
 
 ## 升级注意
 

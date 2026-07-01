@@ -123,10 +123,38 @@
   },
   "inject_template": {
     "type": "string",
-    "description": "上下文注入模板（用户消息侧）",
-    "hint": "变更时注入到 LLM 用户消息的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度显示文本, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。",
+    "description": "上下文注入模板（用户消息侧-完整档）",
+    "hint": "变更时注入到 LLM 用户消息的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度显示文本, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。开启精简档时，完整档在等级/关系/时段/用户变化或每 full_inject_interval 轮触发。",
     "obvious_hint": true,
     "default": "<{nickname}好感{affection_display}> <{time_segment}>"
+  },
+  "enable_compact_inject": {
+    "type": "bool",
+    "description": "启用精简注入档",
+    "hint": "开启后按「完整/精简」双档轮转：完整档随好感等级/关系/时间段/用户变化触发，中间轮次走精简档，只注入 id/昵称/好感等级/关系/时段名。关闭则每轮都走完整档（与旧行为一致）。",
+    "obvious_hint": true,
+    "default": true
+  },
+  "full_inject_interval": {
+    "type": "int",
+    "description": "完整注入兜底周期（轮）",
+    "hint": "每个用户每 N 轮至少注入一次完整上下文，防止 LLM 遗忘。中间轮次走精简档。等级/关系/时段/用户变化会立即强制完整注入并重置周期。设为 0 相当于关闭精简档。",
+    "obvious_hint": true,
+    "default": 10
+  },
+  "inject_template_compact": {
+    "type": "string",
+    "description": "精简注入模板",
+    "hint": "非完整轮次使用的短模板。可用变量：{user_id}=用户ID（不可省略）, {nickname}=昵称, {affection_display}=好感度显示, {relation_short}=关系类型（无关系时为空串）, {time_period}=时段名（凌晨/上午/中午/下午/晚上/深夜）。默认输出约 25 字，比完整档节省 60%+。",
+    "obvious_hint": true,
+    "default": "<id={user_id}|{nickname}|{affection_display}|{relation_short}|{time_period}>"
+  },
+  "context_meta_hint": {
+    "type": "text",
+    "description": "上下文标签元指令（system_prompt）",
+    "hint": "一次性告知 LLM 用户消息前的注入标签如何解读。仅注入到 system_prompt，享受 provider 端 prompt caching，摊销后基本零成本。留空关闭。",
+    "obvious_hint": true,
+    "default": "[上下文标签说明] 用户消息前可能出现 <id=xxx|昵称|好感xxx|关系|时段> 或更完整的标签，用于告知你当前发话人、情感状态、关系与时间。同一人连续对话时相似标签会重复出现，视为常态，不要主动提及或复述这些标签本身。"
   },
   "relationship_inject_template_private": {
     "type": "string",

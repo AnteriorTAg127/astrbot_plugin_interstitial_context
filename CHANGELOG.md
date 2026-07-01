@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.5.0] - 2026-07-01
+### Added
+- **精简注入档**：新增 `inject_template_compact` 配置项与 `enable_compact_inject` / `full_inject_interval` 开关，实现「完整档 / 精简档」双档轮转。默认精简模板 `<id={user_id}|{nickname}|{affection_display}|{relation_short}|{time_period}>`，样例下 78 字 → 30 字，**降本 61.5%**。
+- **完整档触发条件**：首次发话、好感等级变化、关系类型变化、时间段变化、发话人变化，或距上次完整档满 `full_inject_interval` 轮（防遗忘兜底）。中间轮次走精简档。计数按 cache_key（群号:用户ID）独立，切换用户天然独立不受串扰。
+- **`context_meta_hint` 元指令配置**：给 LLM 一次性说明用户消息前注入标签的含义。仅写入 system_prompt，**享受 provider 端 prompt caching**，摊销后基本零成本。可留空关闭。
+- **精简模板变量**：`{relation_short}` = 有关系时为关系类型、无关系时为空串；`{time_period}` = 时段名（凌晨/上午/中午/下午/晚上）。`{user_id}` 保留（LLM 通过 id 精确锚定发话人）。
+
+### Changed
+- **`_get_time_segment` 返回三元组**：新增 `time_period` 分量，供精简模板使用。原返回值 `(segment_key, formatted)` → `(segment_key, formatted, time_period)`。仅内部接口变更，配置项与外部行为无影响。
+- **注入日志加 mode 标记**：`注入(N字) → ...` → `注入(N字, mode=full) → ...` 或 `mode=compact`，方便观测双档收益。
+- **关系去歧义拼接不受档位影响**：无论完整档还是精简档，触发去歧义时都会拼接一次提示；关系对象快照清空逻辑（v1.4.4 修复）保留。
+
+### Backward compatibility
+- 用户不修改任何配置：新版默认开启精简档，若不希望改变行为，可设 `enable_compact_inject=false` 或 `full_inject_interval=0` 完全回退到 v1.4.4 行为。
+- 已有 `inject_template` / `relationship_inject_template_group` / `time_format_template` 完整档行为与 v1.4.4 一致。
+- 无数据库 schema 变更，无迁移。
+
 ## [1.4.4] - 2026-07-01
 ### Fixed
 - **群聊关系去歧义后语境未回切**：群聊中关系对象 A（如「主人」）→ 非关系对象 B 发言触发一次去歧义提示后，A 再次发言时因 `_inject_snapshot` 未过期（好感段/时间段/关系类型均未变）导致不重新注入，LLM 上下文里最后一条只剩「不是主人」的歧义提示，容易延续错误称呼语境。现触发去歧义时同时清除关系对象的 `_inject_snapshot`，其下次发话强制完整重注入身份/关系。仅影响 `inject_no_save=False`（持久化）配置。

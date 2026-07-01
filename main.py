@@ -19,7 +19,7 @@ from .db import AffectionDB
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.4")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.5.0")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -270,7 +270,10 @@ class InterstitialContextPlugin(Star):
     # ==================== 时间区间计算 ====================
 
     def _get_time_segment(self) -> tuple:
-        """计算当前时间区间，返回 (区间标识, 格式化文本)"""
+        """计算当前时间区间，返回 (区间标识, 格式化文本, 时段名称)
+
+        时段名称属于集合 {凌晨, 上午, 中午, 下午, 晚上, 深夜}，供精简模板 {time_period} 使用。
+        """
         now = datetime.now()
         granularity = self.config.get("time_granularity", 30)
         total_minutes = now.hour * 60 + now.minute
@@ -305,7 +308,7 @@ class InterstitialContextPlugin(Star):
             end_m=f"{end_m:02d}",
         )
 
-        return (f"{segment_index}", formatted)
+        return (f"{segment_index}", formatted, time_period)
 
     # ==================== 变更注入（on_llm_request 钩子） ====================
 
@@ -371,6 +374,11 @@ class InterstitialContextPlugin(Star):
             max_change = self.config.get("max_affection_change", 5)
             static_info += "\n" + hint.format(max_change=max_change)
 
+        # 4a-2. 上下文标签元指令（system_prompt，一次注入享受 prompt caching）
+        meta_hint = self.config.get("context_meta_hint", "")
+        if meta_hint:
+            static_info += "\n" + meta_hint
+
         # 4b. 好感度等级语言模板（如「刚刚认识，有点害羞」）随用户消息注入（见 step 5）。
         # 它会随好感度等级变化，因此私聊/群聊统一走 user prompt，不放进 system_prompt。
         # 此处仅做等级变更判定，实际拼接在 step 5。
@@ -408,7 +416,7 @@ class InterstitialContextPlugin(Star):
 
         # 5. 动态信息注入用户消息（好感度、时间区间、群聊关系）
         affection_range_key = self._get_affection_range_key(affection)
-        time_segment_key, time_segment_text = self._get_time_segment()
+        time_segment_key, time_segment_text, time_period = self._get_time_segment()
         # 群聊关系类型也纳入变更检测：关系变化时强制重新注入
         relation_key = rel.get("relation_type", "") if (rel and group_id) else ""
 
@@ -420,28 +428,68 @@ class InterstitialContextPlugin(Star):
             or snapshot.get("relation_key") != relation_key
         )
 
+        # 双档决策：满足以下任一 → 完整档；否则精简档（若开启）
+        # - 首次发话（无 snapshot）
+        # - 任一维度变化（changed）
+        # - no_save 模式且未开启精简档兼容（保持旧行为下每轮完整注入）
+        # - 精简档功能关闭 / 周期设为 0
+        # - full_round_counter 达到兜底周期
+        enable_compact = self.config.get("enable_compact_inject", True)
+        full_interval = self.config.get("full_inject_interval", 10)
+        prev_counter = snapshot.get("full_round_counter", 0) if snapshot else 0
+        use_full = (
+            not snapshot
+            or changed
+            or not enable_compact
+            or full_interval <= 0
+            or prev_counter + 1 >= full_interval
+        )
+
         if changed or not snapshot or no_save:
             affection_display = self._match_affection_rule(affection)
-            inject_template = self.config.get(
-                "inject_template",
-                "<{nickname}好感{affection_display}> <{time_segment}>",
-            )
-            inject_text = inject_template.format(
-                user_id=user_id,
-                nickname=nickname,
-                affection_display=affection_display,
-                time_segment=time_segment_text,
-            )
+            if use_full:
+                inject_template = self.config.get(
+                    "inject_template",
+                    "<{nickname}好感{affection_display}> <{time_segment}>",
+                )
+                inject_text = inject_template.format(
+                    user_id=user_id,
+                    nickname=nickname,
+                    affection_display=affection_display,
+                    time_segment=time_segment_text,
+                )
+                inject_mode = "full"
+                next_counter = 0
+            else:
+                compact_template = self.config.get(
+                    "inject_template_compact",
+                    "<id={user_id}|{nickname}|{affection_display}|{relation_short}|{time_period}>",
+                )
+                relation_short = (
+                    rel.get("relation_type", "") if (rel and group_id) else ""
+                )
+                # 私聊也允许精简模板体现关系（若有）
+                if not group_id and rel:
+                    relation_short = rel.get("relation_type", "")
+                inject_text = compact_template.format(
+                    user_id=user_id,
+                    nickname=nickname,
+                    affection_display=affection_display,
+                    relation_short=relation_short,
+                    time_period=time_period,
+                )
+                inject_mode = "compact"
+                next_counter = prev_counter + 1
 
-            # 好感度等级语言模板：拼到 inject_text 之后，随用户消息注入（私聊/群聊一致）
-            if inject_level_hint:
+            # 好感度等级语言模板：仅完整档拼接（等级变化时才有意义）
+            if use_full and inject_level_hint:
                 rule_hint = self._get_level_change_hint(affection)
                 if rule_hint:
                     inject_text = inject_text + " " + rule_hint
                     injected_sections.append(("等级语言模板", rule_hint))
 
-            # 群聊关系：拼接到 inject_text 之后
-            if rel and group_id:
+            # 群聊关系：仅完整档拼接（精简模板已含 relation_short）
+            if use_full and rel and group_id:
                 group_tpl = self.config.get(
                     "relationship_inject_template_group",
                     "<{nickname}与你的关系:{relation_type}>",
@@ -499,9 +547,11 @@ class InterstitialContextPlugin(Star):
                 "time_segment": time_segment_key,
                 "user_id": user_id,
                 "relation_key": relation_key,
+                "full_round_counter": next_counter,
             }
         else:
             logger.debug(f"[InterstitialContext] {cache_key} 无变更，跳过注入")
+            inject_mode = None
 
         # 刷新"上一位关系发话人"（仅群聊、当前发话人本身是关系对象时）
         # 注意：此处放在 changed 分支外——A 多次连发时也持续刷新，避免昵称/描述滞后
@@ -517,8 +567,9 @@ class InterstitialContextPlugin(Star):
         if injected_sections:
             parts_str = " | ".join(f"[{name}]{text}" for name, text in injected_sections)
             total_chars = sum(len(text) for _, text in injected_sections)
+            mode_tag = f", mode={inject_mode}" if inject_mode else ""
             logger.info(
-                f"[InterstitialContext] {cache_key} 注入({total_chars}字) → {parts_str}"
+                f"[InterstitialContext] {cache_key} 注入({total_chars}字{mode_tag}) → {parts_str}"
             )
 
     # ==================== 好感度变化解析（on_llm_response 钩子） ====================
