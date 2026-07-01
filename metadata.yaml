@@ -1,6 +1,6 @@
 name: astrbot_plugin_interstitial_context
 display_name: 轻量上下文注入
 desc: 根据好感度和时间区间变化，向 LLM 请求注入动态上下文，并从 LLM 回复中解析好感度变化。
-version: v1.4.3
+version: v1.4.4
 author: AnteriorTAg127
 repo: https://github.com/AnteriorTAg127/astrbot_plugin_interstitial_context

@@ -19,7 +19,7 @@ from .db import AffectionDB
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.3")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.4.4")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -481,6 +481,11 @@ class InterstitialContextPlugin(Star):
                         injected_sections.append(("关系去歧义", disambig_text))
                 # 无论模板是否有效都清除，保证"只注入一次"
                 self._last_relation_speaker.pop(group_id, None)
+                # 同时清空关系对象的注入快照：LLM 上下文里刚出现"不是主人"的歧义提示，
+                # 关系对象下次发话必须重新完整注入身份/关系，避免 LLM 延续歧义语境。
+                prev_user_id = prev.get("user_id")
+                if prev_user_id:
+                    self._inject_snapshot.pop(f"{group_id}:{prev_user_id}", None)
 
             part = TextPart(text=inject_text)
             if no_save:
@@ -511,7 +516,10 @@ class InterstitialContextPlugin(Star):
         # 汇总打印本轮注入内容（一条日志，便于排查）
         if injected_sections:
             parts_str = " | ".join(f"[{name}]{text}" for name, text in injected_sections)
-            logger.info(f"[InterstitialContext] {cache_key} 注入 → {parts_str}")
+            total_chars = sum(len(text) for _, text in injected_sections)
+            logger.info(
+                f"[InterstitialContext] {cache_key} 注入({total_chars}字) → {parts_str}"
+            )
 
     # ==================== 好感度变化解析（on_llm_response 钩子） ====================
 
