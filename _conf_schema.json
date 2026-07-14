@@ -23,7 +23,7 @@
   "affection_display_mode": {
     "type": "string",
     "description": "好感度显示模式",
-    "hint": "number = 只显示数值（如 85）；text = 只显示文字（如 死党）；both = 数值+文字（如 85（死党））",
+    "hint": "number = 只显示数值（如 85）；text = 只显示文字（如 死党）；both = 数值+文字（如 85（死党））。仅影响 /好感度 查看 与排行榜展示，不影响上下文注入（注入始终使用等级文字）。",
     "obvious_hint": true,
     "default": "text",
     "options": [
@@ -124,9 +124,9 @@
   "inject_template": {
     "type": "string",
     "description": "上下文注入模板（用户消息侧-完整档）",
-    "hint": "变更时注入到 LLM 用户消息的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度显示文本, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。开启精简档时，完整档在等级/关系/时段/用户变化或每 full_inject_interval 轮触发。",
+    "hint": "变更时注入到 LLM 用户消息的文本模板。可用变量：{user_id}=用户ID, {nickname}=昵称, {affection_display}=好感度等级文字（如 死党，不受显示模式影响）, {time_segment}=时间区间。可以删除不需要的变量实现「只注入变化」。开启精简档时，完整档在等级/关系/时段/用户变化或每 full_inject_interval 轮触发。",
     "obvious_hint": true,
-    "default": "<{nickname}好感{affection_display}> <{time_segment}>"
+    "default": "<{user_id} {nickname}好感{affection_display}> <{time_segment}>"
   },
   "enable_compact_inject": {
     "type": "bool",
@@ -145,7 +145,7 @@
   "inject_template_compact": {
     "type": "string",
     "description": "精简注入模板",
-    "hint": "非完整轮次使用的短模板。可用变量：{user_id}=用户ID（不可省略）, {nickname}=昵称, {affection_display}=好感度显示, {relation_short}=关系类型（无关系时为空串）, {time_period}=时段名（凌晨/上午/中午/下午/晚上/深夜）。默认输出约 25 字，比完整档节省 60%+。",
+    "hint": "非完整轮次使用的短模板。可用变量：{user_id}=用户ID（不可省略）, {nickname}=昵称, {affection_display}=好感度等级文字, {relation_short}=关系类型（无关系时为空串）, {time_period}=时段名（凌晨/上午/中午/下午/晚上/深夜）。默认输出约 25 字，比完整档节省 60%+。",
     "obvious_hint": true,
     "default": "<id={user_id}|{nickname}|{affection_display}|{relation_short}|{time_period}>"
   },
@@ -180,7 +180,7 @@
   "inject_no_save": {
     "type": "bool",
     "description": "注入内容不持久化",
-    "hint": "开启后，注入的用户消息内容（好感度、时间区间等）标记为临时内容，不保存到对话历史。副作用：每轮对话都会重新注入（因为历史中没有记录）。关闭后，注入内容会保存到对话历史，但变更检测生效时同一区间内不会重复注入。",
+    "hint": "开启后，注入的用户消息内容（好感度、时间区间等）标记为临时内容，不保存到对话历史。副作用：每轮对话都会重新注入（因为历史中没有记录）。关闭后，注入内容会保存到对话历史，但变更检测生效时同一区间内不会重复注入。注意：精简档与兜底周期（full_inject_interval）仅在 no_save=true 下生效；no_save=false 时无维度变化不重复注入（v1.4.x 既有语义）。",
     "obvious_hint": true,
     "default": true
   },
@@ -356,7 +356,7 @@
   "enable_affection_change_hint": {
     "type": "bool",
     "description": "启用好感度等级语言模板",
-    "hint": "开启后好感度等级的语言变化模板会注入到 LLM 的 system prompt 中，关闭后不注入。",
+    "hint": "开启后好感度等级的语言变化模板会随用户消息注入（仅完整档，等级变化或 no_save 时触发），关闭后不注入。",
     "obvious_hint": true,
     "default": true
   },

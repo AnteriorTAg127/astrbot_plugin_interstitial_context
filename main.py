@@ -31,6 +31,7 @@ class InterstitialContextPlugin(Star):
         # 群聊维度：上一位「关系绑定」发话人，用于下一位非该用户发话时一次性注入去歧义提示
         # {group_id: {"user_id","nickname","relation_type","relation_desc"}}
         self._last_relation_speaker = {}
+        self._last_static_info = {}  # {cache_key: 上一轮 static_info}，用于日志"system_prompt 是否变动"判定
         self._last_cache_cleanup = datetime.now()  # 上次缓存清理时间
 
         # 数据库
@@ -357,6 +358,8 @@ class InterstitialContextPlugin(Star):
                 event.stop_event()
                 return
 
+        system_sections = []  # system_prompt 注入项（日志用）
+
         # 4. 静态信息注入 system_prompt
         if group_id:
             group_name = await self._get_group_name(event, group_id)
@@ -367,22 +370,25 @@ class InterstitialContextPlugin(Star):
                 static_info = f"[当前对话:群聊{group_id}]"
         else:
             static_info = f"[当前对话:私聊 用户{nickname}({user_id})]"
+        system_sections.append(("当前对话", static_info))
 
         # 4a. 好感度变化提示
         hint = self.config.get("affection_change_hint", "")
         if hint:
             max_change = self.config.get("max_affection_change", 5)
-            static_info += "\n" + hint.format(max_change=max_change)
+            hint_text = hint.format(max_change=max_change)
+            static_info += "\n" + hint_text
+            system_sections.append(("affection_change_hint", hint_text))
 
         # 4a-2. 上下文标签元指令（system_prompt，一次注入享受 prompt caching）
         meta_hint = self.config.get("context_meta_hint", "")
         if meta_hint:
             static_info += "\n" + meta_hint
+            system_sections.append(("context_meta_hint", meta_hint))
 
         # 4b. 好感度等级语言模板（如「刚刚认识，有点害羞」）随用户消息注入（见 step 5）。
         # 它会随好感度等级变化，因此私聊/群聊统一走 user prompt，不放进 system_prompt。
         # 此处仅做等级变更判定，实际拼接在 step 5。
-        injected_sections = []  # 用于本轮注入日志汇总
         affection_range_key_for_hint = self._get_affection_range_key(affection)
         snapshot_for_hint = self._inject_snapshot.get(cache_key, {})
         level_changed = (
@@ -408,7 +414,10 @@ class InterstitialContextPlugin(Star):
                     rel_text = self._format_relationship(priv_tpl, user_id, nickname, rel)
                     if rel_text:
                         static_info += "\n" + rel_text
-                        injected_sections.append(("关系设定/私聊", rel_text))
+                        system_sections.append(("私聊关系", rel_text))
+        # system_prompt 是否较上一轮变动（日志标注用）
+        sys_changed = static_info != self._last_static_info.get(cache_key)
+        self._last_static_info[cache_key] = static_info
         if self.config.get("inject_system_prompt_position", "before") == "before":
             req.system_prompt = static_info + "\n" + req.system_prompt
         else:
@@ -444,6 +453,17 @@ class InterstitialContextPlugin(Star):
             or full_interval <= 0
             or prev_counter + 1 >= full_interval
         )
+        # 注入原因（日志标注用），与 use_full 同步
+        if not snapshot:
+            inject_reason = "首次"
+        elif changed:
+            inject_reason = "变化"
+        elif not enable_compact or full_interval <= 0:
+            inject_reason = "精简关闭"
+        elif prev_counter + 1 >= full_interval:
+            inject_reason = "兜底"
+        else:
+            inject_reason = "增量"
 
         if changed or not snapshot or no_save:
             affection_display = self._match_affection_rule(affection)
@@ -486,7 +506,6 @@ class InterstitialContextPlugin(Star):
                 rule_hint = self._get_level_change_hint(affection)
                 if rule_hint:
                     inject_text = inject_text + " " + rule_hint
-                    injected_sections.append(("等级语言模板", rule_hint))
 
             # 群聊关系：仅完整档拼接（精简模板已含 relation_short）
             if use_full and rel and group_id:
@@ -526,7 +545,6 @@ class InterstitialContextPlugin(Star):
                         disambig_text = ""
                     if disambig_text:
                         inject_text = inject_text + " " + disambig_text
-                        injected_sections.append(("关系去歧义", disambig_text))
                 # 无论模板是否有效都清除，保证"只注入一次"
                 self._last_relation_speaker.pop(group_id, None)
                 # 同时清空关系对象的注入快照：LLM 上下文里刚出现"不是主人"的歧义提示，
@@ -539,7 +557,6 @@ class InterstitialContextPlugin(Star):
             if no_save:
                 part.mark_as_temp()
             req.extra_user_content_parts.append(part)
-            injected_sections.append(("上下文", inject_text))
 
             # 更新快照
             self._inject_snapshot[cache_key] = {
@@ -552,6 +569,8 @@ class InterstitialContextPlugin(Star):
         else:
             logger.debug(f"[InterstitialContext] {cache_key} 无变更，跳过注入")
             inject_mode = None
+            inject_reason = "跳过"
+            inject_text = None
 
         # 刷新"上一位关系发话人"（仅群聊、当前发话人本身是关系对象时）
         # 注意：此处放在 changed 分支外——A 多次连发时也持续刷新，避免昵称/描述滞后
@@ -563,14 +582,23 @@ class InterstitialContextPlugin(Star):
                 "relation_desc": rel.get("relation_desc", ""),
             }
 
-        # 汇总打印本轮注入内容（一条日志，便于排查）
-        if injected_sections:
-            parts_str = " | ".join(f"[{name}]{text}" for name, text in injected_sections)
-            total_chars = sum(len(text) for _, text in injected_sections)
-            mode_tag = f", mode={inject_mode}" if inject_mode else ""
+        # 汇总打印本轮注入内容（system / user 分行，便于排查）
+        sys_parts = []
+        for _name, _text in system_sections:
+            if len(_text) > 40:
+                sys_parts.append(f"{_name}({len(_text)}字)")
+            else:
+                sys_parts.append(_text)
+        sys_str = " | ".join(sys_parts) if sys_parts else "（无）"
+        sys_tag = "已变动" if sys_changed else "未变动"
+        logger.info(f"[InterstitialContext] {cache_key}")
+        logger.info(f"  ↳ system_prompt({sys_tag}): {sys_str}")
+        if inject_mode:
             logger.info(
-                f"[InterstitialContext] {cache_key} 注入({total_chars}字{mode_tag}) → {parts_str}"
+                f"  ↳ user 消息({len(inject_text)}字, mode={inject_mode}/{inject_reason}): {inject_text}"
             )
+        else:
+            logger.info("  ↳ user 消息: 跳过（无变更）")
 
     # ==================== 好感度变化解析（on_llm_response 钩子） ====================
 

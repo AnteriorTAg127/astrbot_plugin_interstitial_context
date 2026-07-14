@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.2] - 2026-07-14
+### Fixed
+- **默认 `inject_template` 补 `{user_id}`**：默认值由 `<{nickname}好感{affection_display}> <{time_segment}>` 改为 `<{user_id} {nickname}好感{affection_display}> <{time_segment}>`，与 PRD v1.5.0「`{user_id}` 必须保留」要求一致。仅影响新装默认值。
+
+### Changed
+- **澄清 `{affection_display}` 注入语义**：上下文注入的 `{affection_display}` 始终使用好感度等级文字（如「死党」）；`affection_display_mode`（number/text/both）仅影响 `/好感度 查看` 与排行榜展示，不影响注入。`_conf_schema.json` 相关 hint 同步说明。
+- **注入日志重构**：拆为 system_prompt / user 消息两行分别打印；system 段补全 `[当前对话]`/`affection_change_hint`/`context_meta_hint`，并标注"已变动/未变动"；user 段含 mode 与原因标签（首次/变化/兜底/精简关闭/增量/跳过）；移除冗余的 `[等级语言模板]`/`[关系去歧义]` 重复打印与重复的 `[关系设定]` 前缀。
+- **文档对齐**：README「注入内容一览」表按「不动→system_prompt、会变→user 消息、私聊群聊分离」原则重写；`change_hint_template` 位置修正为 user 消息；新增 `relationship_inject_template_group` 与 `relationship_disambiguation_template` 两行；关系注入 key 名由单数拆分为 `_private`/`_group`；CHANGELOG v1.4.0 条目加勘误；`_conf_schema.json` hint 更新；`开发/v1.4` 设计文档加 superseded 标注。
+
 ## [1.5.0] - 2026-07-01
 ### Added
 - **精简注入档**：新增 `inject_template_compact` 配置项与 `enable_compact_inject` / `full_inject_interval` 开关，实现「完整档 / 精简档」双档轮转。默认精简模板 `<id={user_id}|{nickname}|{affection_display}|{relation_short}|{time_period}>`，样例下 78 字 → 30 字，**降本 61.5%**。
@@ -55,7 +64,7 @@
 - **用户临时屏蔽（Mute）**：新增 LLM 工具 `mute_user`，调用者好感度低于 `mute_affection_threshold`（默认 -50）时可屏蔽指定用户，到期自动失效；被屏蔽用户的消息在 `on_llm_request` 早期即被 `stop_event()` 丢弃
 - **好感度等级语言变化模板**：`affection_rules` 每条规则新增 `change_hint_template` 字段，等级变化时注入 system prompt（沿用变更检测，同等级不重复注入），支持 `{affection}` / `{display_text}` 占位符；预设五个等级均带默认模板
 - **关系绑定**：新增 LLM 工具 `bind_relationship`，被绑定用户好感度达 `relationship_min_affection`（默认 30）才能绑定，关系基于 user_id 全局唯一（一对一）
-- **关系注入模板**：新增 `relationship_inject_template` 配置项（支持 `{user_id}` / `{relation_type}` / `{relation_desc}`），默认 `[关系设定] 你与对方的关系为「{relation_type}」。{relation_desc}`
+- **关系注入模板**：新增 `relationship_inject_template` 配置项（支持 `{user_id}` / `{relation_type}` / `{relation_desc}`），默认 `[关系设定] 你与对方的关系为「{relation_type}」。{relation_desc}`（注：实际为 `relationship_inject_template_private` + `relationship_inject_template_group` 两个 key，v1.5.2 勘误）
 - **解绑指令**：`/好感度 解绑关系` — 本人可解除自己；管理员 `@某人` 可解除指定用户
 - **预设关系类型配置**：新增 `relationship_type_templates`（默认含师徒/主从/朋友/搭档四种），LLM 未指定描述时按预设回填
 - **独立功能开关**：`enable_mute` / `enable_relationship` / `enable_affection_change_hint`，关闭时对应 LLM 工具会被动态卸载，对 LLM 完全不可见

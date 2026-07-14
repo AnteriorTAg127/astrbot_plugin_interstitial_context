@@ -12,7 +12,7 @@
 - **完整/精简双档注入** *(v1.5.0)*：默认每 10 轮注入一次完整上下文，中间轮次走精简模板（约 25 字），**同一用户连续对话降本 60%+**。等级/关系/时段/用户变化立即触发完整档
 - **上下文标签元指令** *(v1.5.0)*：`context_meta_hint` 一次性写入 system_prompt，供 provider 端 prompt caching 摊销成本
 - **好感度等级语言模板** *(v1.4.0)*：每个等级可配置 `change_hint_template`，等级变化时随用户消息注入，引导 LLM 按当前等级语言风格回复
-- **关系绑定与注入** *(v1.4.0)*：LLM 可通过工具绑定关系（如师徒/主从），关系描述自动注入 system prompt
+- **关系绑定与注入** *(v1.4.0)*：LLM 可通过工具绑定关系（如师徒/主从），私聊注入 system_prompt，群聊注入 user 消息（仅完整档）
 
 ### 行为控制
 - **回复概率**：线性插值计算，低好感时概率不回复 + 冷淡提示，冻结与恢复机制
@@ -67,7 +67,7 @@
 - 查看指令速率限制
 - 排行默认显示人数、最大显示人数、T2I 渲染端点
 - **v1.4.0**：屏蔽 / 关系 / 等级语言模板的独立开关及阈值
-- **v1.4.0**：关系注入模板 `relationship_inject_template`（变量 `{user_id}` / `{relation_type}` / `{relation_desc}`）
+- **v1.4.0**：关系注入模板 `relationship_inject_template_private`（私聊 system_prompt）/ `relationship_inject_template_group`（群聊 user 消息）（变量 `{user_id}` / `{relation_type}` / `{relation_desc}`）
 - **v1.4.0**：预设关系类型模板列表 `relationship_type_templates`（type + description）
 - **v1.5.0**：精简注入档 `inject_template_compact` + 开关 `enable_compact_inject` + 兜底周期 `full_inject_interval`（默认 10 轮）
 - **v1.5.0**：`context_meta_hint` 一次性写入 system_prompt，享受 provider 端 prompt caching，摊销后基本零成本
@@ -80,17 +80,17 @@
 |---------|--------|---------|
 | system_prompt | （内置 `[当前对话:...]`） | 每次 LLM 请求 |
 | system_prompt | `affection_change_hint` | 每次 LLM 请求 |
-| system_prompt | `context_meta_hint` *(v1.5.0)* | 每次 LLM 请求，非空时；供 provider 端 prompt caching |
-| system_prompt | `affection_rules[i].change_hint_template` | 好感度等级变化时（同级不重复） |
-| system_prompt | `relationship_inject_template_private` | 私聊已绑定关系时 |
-| user 消息 | `inject_template`（完整档） | 首次 / 等级/关系/时段/用户变化 / 每 `full_inject_interval` 轮兜底 |
-| user 消息 | `inject_template_compact`（精简档，*(v1.5.0)*） | 完整档条件都不满足时的中间轮次 |
+| system_prompt | `context_meta_hint` *(v1.5.0)* | 每次请求，非空时；供 provider 端 prompt caching |
+| system_prompt | `relationship_inject_template_private` | 仅私聊已绑定关系时 |
+| user 消息 | `affection_rules[i].change_hint_template` | 完整档且（等级变化或 `no_save`）时；随等级变化故走 user 消息 |
+| user 消息 | `inject_template`（完整档） | 首次 / 等级·关系·时段·发话人变化 / 每 `full_inject_interval` 轮兜底 |
+| user 消息 | `inject_template_compact`（精简档, v1.5.0） | 完整档条件都不满足的中间轮次（仅 `no_save=true`） |
+| user 消息 | `relationship_inject_template_group` | 仅群聊，完整档且已绑定关系 |
+| user 消息 | `relationship_disambiguation_template` | 仅群聊，切换发话人时一次性注入（完整/精简档均拼） |
 
 ## 升级注意
 
 **v1.4.4 → v1.5.0（推荐升级）**：默认开启精简注入档，同一用户连续对话平均节省 60%+ 注入字数。若希望完全回退到 v1.4.4 行为：设 `enable_compact_inject=false` 或 `full_inject_interval=0`，并清空 `context_meta_hint`。无数据库/配置迁移。
-
-## 升级注意
 
 **v1.3 → v1.4 不兼容变更**：移除了 `cold_hint_template` 配置项。低好感语气改由好感规则的 `change_hint_template` 字段承担。预设规则已带默认冷淡模板，升级用户无需手动配置即可保持原行为；如果你曾自定义过 `cold_hint_template`，请把内容迁移到对应等级（一般是好感度 -100~0 段）的 `change_hint_template`。
 
