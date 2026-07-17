@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.5.3] - 2026-07-17
+### Fixed
+- **模板格式化崩溃（#2 #3 #12）**：`inject_template` / `inject_template_compact` / `affection_rules[].change_hint_template` 三处 `.format()` 缺少异常保护，管理员拼错占位符（如 `{nicknmae}`）会每条消息抛 `KeyError`、`on_llm_request` 崩溃、注入全线失效。现套用 `_format_relationship` 的 try/except 模式，格式化失败回退原文本并打 warning 日志。
+- **Web API 非法请求体裸错误（#6）**：6 个 POST handler（添加/修改好感度、添加/解除屏蔽、添加/解绑关系）的 `request.get_json()` 原在 try/except 之外，非 JSON Content-Type 或坏 JSON 会抛 `AttributeError`/`BadRequest` 返回框架错误页。现 `get_json(silent=True) or {}` 移入 try，返回结构化 `{"ok":false,"error":"请求体必须是合法 JSON"}` 400。
+- **添加关系静默覆盖（#10）**：POST `/relationships/add` 对已有关系用户直接 upsert 覆盖，丢失原 `bound_by`/`bound_at` 且无提示。现 `bind_relationship` 冲突时仅更新 `relation_type`/`relation_desc`、保留原 `bound_by`/`bound_at`；响应返回 `overwrote`/`previous` 使覆盖非静默。保留 upsert 语义以兼容管理面板「编辑关系」流程（app.js 复用 `/relationships/add` 做 add+edit）。
+- **重复屏蔽记录（#8）**：`add_mute` 不查重，LLM 工具/Web API 重复调用产生多条活跃屏蔽，导致管理面板重复展示且 `remove_mute(id)` 仅清一条、其余永久活跃。现 `add_mute` 命中已有活跃屏蔽时刷新其信息并返回原 id。
+- **用户列表昵称取字典序最大（#7）**：`list_users` 的 `MAX(nickname)` 按字典序返回，跨会话不同昵称时管理面板显示过时昵称。改用按 `last_active` 取最新昵称的相关子查询（利用既有列，无 schema 变更）。
+- **空 `display_text` 渲染异常（#15）**：`_render_affection_display` 在管理员将某好感段 `display_text` 置空时返回 `""`（text）或 `"50（）"`（both）。现回退 `str(affection)`。仅影响 `/好感度 查看` 与排行榜展示，不影响 LLM 注入（注入始终用等级文字，PRD §5 C1）。
+- **好感度过度衰减（#5）**：`_calculate_decay` 写好感度与 `_update_last_active` 刷活跃时间为独立事务，若前者成功后者失败，下条消息按陈旧 `last_active` 再次衰减。新增 `set_affection_and_last_active` 原子方法，衰减与活跃时间同事务提交。触发窗口窄（两次写之间 DB 异常）。
+- **KV 迁移无幂等标记（#13）**：`migrate_from_kv` 成功后仅靠「KV 已删尽」隐式幂等，INSERT 提交后、KV 删尽前崩溃重跑可能用残留 KV 覆盖期间新数据。新增 `kv_migration_done` 标记文件，入口检查跳过。无 schema 变更。
+
+### Changed
+- **render_test.py 导入排序**：修复预存的 ruff I001（import 未分组排序）。
+
+### Notes
+- **review_01 核实**：经代码 + AstrBot 框架（CodeGraph）+ PRD 三重核实，review_01 的 15 项发现中 5 项为误报不改代码（#1 `system_prompt` 默认 `""`；#4/#9 asyncio 同步段原子；#14 `extra_user_content_parts` 为 `field(default_factory=list)`；#11 PRD §7.1 既定语义）。详见 `开发/v1.5.2/fix_plan_01.md`。
+- 无 DB schema 变更，无配置迁移；修复均不触碰注入位置/内容，符合 PRD §3 注入统帅原则。
+
 ## [1.5.2] - 2026-07-14
 ### Fixed
 - **默认 `inject_template` 补 `{user_id}`**：默认值由 `<{nickname}好感{affection_display}> <{time_segment}>` 改为 `<{user_id} {nickname}好感{affection_display}> <{time_segment}>`，与 PRD v1.5.0「`{user_id}` 必须保留」要求一致。仅影响新装默认值。

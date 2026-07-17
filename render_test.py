@@ -4,8 +4,9 @@
 """
 import asyncio
 import json
-import aiohttp
 import ssl
+
+import aiohttp
 import certifi
 
 T2I_BASE = "http://192.168.0.47:8999/text2img"

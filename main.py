@@ -19,7 +19,7 @@ from .db import AffectionDB
 PLUGIN_NAME = "astrbot_plugin_interstitial_context"
 
 
-@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.5.2")
+@register(PLUGIN_NAME, "AnteriorTAg127", "轻量上下文注入插件", "1.5.3")
 class InterstitialContextPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -242,10 +242,16 @@ class InterstitialContextPlugin(Star):
                 template = rule.get("change_hint_template", "")
                 if template:
                     display_text = rule.get("display_text", "")
-                    return template.format(
-                        affection=affection,
-                        display_text=display_text,
-                    )
+                    try:
+                        return template.format(
+                            affection=affection,
+                            display_text=display_text,
+                        )
+                    except (KeyError, IndexError) as e:
+                        logger.warning(
+                            f"[InterstitialContext] 等级语言模板格式化失败: {e}，使用原文本"
+                        )
+                        return template
                 break
         return ""
 
@@ -264,9 +270,9 @@ class InterstitialContextPlugin(Star):
         if mode == "number":
             return str(affection)
         elif mode == "text":
-            return label
+            return label if label else str(affection)
         else:  # both
-            return f"{affection}（{label}）"
+            return f"{affection}（{label}）" if label else str(affection)
 
     # ==================== 时间区间计算 ====================
 
@@ -472,12 +478,18 @@ class InterstitialContextPlugin(Star):
                     "inject_template",
                     "<{nickname}好感{affection_display}> <{time_segment}>",
                 )
-                inject_text = inject_template.format(
-                    user_id=user_id,
-                    nickname=nickname,
-                    affection_display=affection_display,
-                    time_segment=time_segment_text,
-                )
+                try:
+                    inject_text = inject_template.format(
+                        user_id=user_id,
+                        nickname=nickname,
+                        affection_display=affection_display,
+                        time_segment=time_segment_text,
+                    )
+                except (KeyError, IndexError) as e:
+                    logger.warning(
+                        f"[InterstitialContext] inject_template 格式化失败: {e}，使用原文本"
+                    )
+                    inject_text = inject_template
                 inject_mode = "full"
                 next_counter = 0
             else:
@@ -491,13 +503,19 @@ class InterstitialContextPlugin(Star):
                 # 私聊也允许精简模板体现关系（若有）
                 if not group_id and rel:
                     relation_short = rel.get("relation_type", "")
-                inject_text = compact_template.format(
-                    user_id=user_id,
-                    nickname=nickname,
-                    affection_display=affection_display,
-                    relation_short=relation_short,
-                    time_period=time_period,
-                )
+                try:
+                    inject_text = compact_template.format(
+                        user_id=user_id,
+                        nickname=nickname,
+                        affection_display=affection_display,
+                        relation_short=relation_short,
+                        time_period=time_period,
+                    )
+                except (KeyError, IndexError) as e:
+                    logger.warning(
+                        f"[InterstitialContext] inject_template_compact 格式化失败: {e}，使用原文本"
+                    )
+                    inject_text = compact_template
                 inject_mode = "compact"
                 next_counter = prev_counter + 1
 
@@ -729,7 +747,9 @@ class InterstitialContextPlugin(Star):
         min_val = self.config.get("affection_min", -100)
         max_val = self.config.get("affection_max", 100)
         new_value = max(min_val, min(max_val, int(new_value)))
-        await self.db.set_affection(user_id, session_id, new_value)
+        await self.db.set_affection_and_last_active(
+            user_id, session_id, new_value, datetime.now().isoformat()
+        )
 
         logger.debug(f"好感度衰减: {current} -> {new_value} (超时{overtime:.1f}小时)")
         return new_value
@@ -1051,7 +1071,11 @@ class InterstitialContextPlugin(Star):
 
     async def _api_affections_create(self):
         """POST 添加好感度记录"""
-        data = await request.get_json()
+        try:
+            data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] API 解析 JSON 失败: {e}")
+            return jsonify({"ok": False, "error": "请求体必须是合法 JSON"}), 400
         user_id = data.get("user_id", "")
         session_id = data.get("session_id", "")
         affection = data.get("affection", 0)
@@ -1071,7 +1095,11 @@ class InterstitialContextPlugin(Star):
 
     async def _api_affections_update(self):
         """PUT 修改好感度"""
-        data = await request.get_json()
+        try:
+            data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] API 解析 JSON 失败: {e}")
+            return jsonify({"ok": False, "error": "请求体必须是合法 JSON"}), 400
         user_id = data.get("user_id", "")
         session_id = data.get("session_id", "")
         affection = data.get("affection")
@@ -1139,7 +1167,11 @@ class InterstitialContextPlugin(Star):
 
     async def _api_freeze_list_remove(self):
         """POST 解除屏蔽"""
-        data = await request.get_json()
+        try:
+            data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] API 解析 JSON 失败: {e}")
+            return jsonify({"ok": False, "error": "请求体必须是合法 JSON"}), 400
         mute_id = data.get("id")
         if not mute_id:
             return jsonify({"ok": False, "error": "需要提供 id"}), 400
@@ -1152,7 +1184,11 @@ class InterstitialContextPlugin(Star):
 
     async def _api_freeze_list_add(self):
         """POST 添加屏蔽"""
-        data = await request.get_json()
+        try:
+            data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] API 解析 JSON 失败: {e}")
+            return jsonify({"ok": False, "error": "请求体必须是合法 JSON"}), 400
         user_id = data.get("user_id", "")
         session_id = data.get("session_id", "")
         duration_minutes = data.get("duration_minutes", 60)
@@ -1184,7 +1220,11 @@ class InterstitialContextPlugin(Star):
 
     async def _api_relationships_add(self):
         """POST 添加/编辑关系"""
-        data = await request.get_json()
+        try:
+            data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] API 解析 JSON 失败: {e}")
+            return jsonify({"ok": False, "error": "请求体必须是合法 JSON"}), 400
         user_id = data.get("user_id", "")
         relation_type = data.get("relation_type", "")
         relation_desc = data.get("relation_desc", "")
@@ -1192,20 +1232,25 @@ class InterstitialContextPlugin(Star):
         if not user_id or not relation_type:
             return jsonify({"ok": False, "error": "user_id 和 relation_type 不能为空"}), 400
         try:
+            existing = await self.db.get_relationship(user_id)
             ok = await self.db.bind_relationship(
                 user_id=user_id,
                 relation_type=relation_type,
                 relation_desc=relation_desc,
                 bound_by=bound_by,
             )
-            return jsonify({"ok": ok})
+            return jsonify({"ok": ok, "overwrote": bool(existing), "previous": existing})
         except Exception as e:
             logger.error(f"[InterstitialContext] API 添加关系失败: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
 
     async def _api_relationships_unbind(self):
         """POST 管理员解绑关系"""
-        data = await request.get_json()
+        try:
+            data = await request.get_json(silent=True) or {}
+        except Exception as e:
+            logger.warning(f"[InterstitialContext] API 解析 JSON 失败: {e}")
+            return jsonify({"ok": False, "error": "请求体必须是合法 JSON"}), 400
         user_id = data.get("user_id", "")
         if not user_id:
             return jsonify({"ok": False, "error": "需要提供 user_id"}), 400
