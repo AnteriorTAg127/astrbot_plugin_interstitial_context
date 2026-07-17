@@ -149,6 +149,27 @@ class AffectionDB:
             await conn.commit()
         return value
 
+    async def set_affection_and_last_active(
+        self, user_id: str, session_id: str, affection: int, time_str: str
+    ) -> int:
+        """原子写入好感度与最后活跃时间（同事务，失败一同回滚）。
+
+        用于好感度衰减场景：避免 set_affection 成功而 update_last_active 失败时，
+        下次按陈旧 last_active 再次衰减导致好感度过度衰减。
+        """
+        await self._ensure_initialized()
+        async with aiosqlite.connect(self._db_path) as conn:
+            await conn.execute(
+                """INSERT INTO affection (user_id, session_id, nickname, affection, last_active)
+                   VALUES (?, ?, '', ?, ?)
+                   ON CONFLICT(user_id, session_id) DO UPDATE SET
+                       affection = excluded.affection,
+                       last_active = excluded.last_active""",
+                (user_id, session_id, affection, time_str),
+            )
+            await conn.commit()
+        return affection
+
     async def adjust_affection(
         self, user_id: str, session_id: str, delta: int, nickname: str = ""
     ) -> int:
@@ -285,6 +306,12 @@ class AffectionDB:
         """
         await self._ensure_initialized()
 
+        # 迁移完成标记：成功后写标记文件，重启后直接跳过，避免重复迁移覆盖期间新写入的数据
+        marker_path = Path(self._db_path).parent / "kv_migration_done"
+        if marker_path.exists():
+            logger.info("[AffectionDB] KV 迁移已完成（标记文件存在），跳过")
+            return
+
         import json
 
         main_db_path = Path(get_astrbot_data_path()) / "data_v4.db"
@@ -420,6 +447,10 @@ class AffectionDB:
 
         migrated_count = len(affection_data)
         logger.info(f"[AffectionDB] KV 迁移完成，共迁移 {migrated_count} 条记录")
+        try:
+            marker_path.touch()
+        except OSError as e:
+            logger.warning(f"[AffectionDB] 写入迁移标记文件失败: {e}")
 
     async def upsert_session_name(self, session_id: str, session_name: str):
         """更新会话名称（群名），不存在则插入"""
@@ -455,7 +486,14 @@ class AffectionDB:
         async with aiosqlite.connect(self._db_path) as conn:
             conn.row_factory = aiosqlite.Row
             cursor = await conn.execute(
-                "SELECT user_id, MAX(nickname) as nickname FROM affection GROUP BY user_id ORDER BY user_id"
+                """SELECT a.user_id,
+                       (SELECT a2.nickname FROM affection a2
+                        WHERE a2.user_id = a.user_id
+                        ORDER BY a2.last_active IS NULL, a2.last_active DESC
+                        LIMIT 1) as nickname
+                   FROM affection a
+                   GROUP BY a.user_id
+                   ORDER BY a.user_id"""
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
@@ -471,11 +509,30 @@ class AffectionDB:
         self, user_id: str, session_id: str, muted_by: str,
         mute_reason: str, duration_minutes: int
     ) -> int:
-        """添加屏蔽记录，返回新记录的 id"""
+        """添加屏蔽记录，返回记录 id。
+
+        若该用户在该会话已有活跃屏蔽（is_active=1），则刷新其信息并返回原 id，
+        避免重复调用产生多条活跃记录导致管理面板重复展示与 remove_mute(id) 漏清。
+        """
         await self._ensure_initialized()
         from datetime import datetime, timezone
         mute_start = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(self._db_path) as conn:
+            existing_cursor = await conn.execute(
+                "SELECT id FROM freeze_list WHERE user_id = ? AND session_id = ? AND is_active = 1",
+                (user_id, session_id),
+            )
+            existing = await existing_cursor.fetchone()
+            if existing:
+                await conn.execute(
+                    """UPDATE freeze_list
+                       SET muted_by = ?, mute_reason = ?, mute_start = ?,
+                           mute_duration_minutes = ?, is_active = 1
+                       WHERE id = ?""",
+                    (muted_by, mute_reason, mute_start, duration_minutes, existing[0]),
+                )
+                await conn.commit()
+                return existing[0]
             cursor = await conn.execute(
                 """INSERT INTO freeze_list
                        (user_id, session_id, muted_by, mute_reason, mute_start, mute_duration_minutes)
@@ -558,7 +615,11 @@ class AffectionDB:
         self, user_id: str, relation_type: str,
         relation_desc: str, bound_by: str
     ) -> bool:
-        """绑定用户关系（upsert），返回是否成功"""
+        """绑定用户关系（upsert），返回是否成功。
+
+        已存在时仅更新 relation_type / relation_desc，保留原 bound_by / bound_at
+        （原绑定者与绑定时间不被覆盖）；新建时写入传入的 bound_by 与当前时间。
+        """
         await self._ensure_initialized()
         from datetime import datetime, timezone
         bound_at = datetime.now(timezone.utc).isoformat()
@@ -568,9 +629,7 @@ class AffectionDB:
                    VALUES (?, ?, ?, ?, ?)
                    ON CONFLICT(user_id) DO UPDATE SET
                        relation_type = excluded.relation_type,
-                       relation_desc = excluded.relation_desc,
-                       bound_by = excluded.bound_by,
-                       bound_at = excluded.bound_at""",
+                       relation_desc = excluded.relation_desc""",
                 (user_id, relation_type, relation_desc, bound_by, bound_at),
             )
             await conn.commit()
